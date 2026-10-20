@@ -1,0 +1,8 @@
+{
+  "crons": [
+    {
+      "path": "/api/inventory/send-monthly",
+      "schedule": "0 9 * * *"
+    }
+  ]
+}

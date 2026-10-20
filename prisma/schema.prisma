@@ -1,0 +1,456 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+model Permission {
+  id             Int              @id @default(autoincrement())
+  name           String           @unique
+  description    String?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @default(now())
+  rolepermission rolepermission[]
+  userpermission userpermission[]
+
+  @@map("permission")
+}
+
+model ActivityLog {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  action    String
+  details   String?  @db.Text
+  ipAddress String?
+  userAgent String?  @db.Text
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([action])
+  @@index([createdAt])
+  @@map("activity_log")
+}
+
+model categories {
+  id          Int        @id @default(autoincrement())
+  name        String     @unique
+  description String?
+  is_active   Boolean    @default(true)
+  created_at  DateTime   @default(now())
+  updated_at  DateTime   @updatedAt
+  products    products[]
+}
+
+model suppliers {
+  id           Int        @id @default(autoincrement())
+  name         String     @unique
+  contact_name String?
+  email        String?
+  phone        String?
+  address      String?
+  city         String?
+  is_active    Boolean    @default(true)
+  created_at   DateTime   @default(now())
+  updated_at   DateTime   @updatedAt
+  products     products[]
+}
+
+model units {
+  id           Int        @id @default(autoincrement())
+  name         String     @unique
+  abbreviation String     @unique
+  description  String?
+  products     products[]
+}
+
+model products {
+  id            Int                      @id @default(autoincrement())
+  name          String
+  category_id   Int
+  unit_id       Int
+  supplier_id   Int?
+  sku           String?                  @unique
+  description   String?
+  minimum_stock Decimal                  @default(10.000000000000000000000000000000)
+  is_perishable Boolean                  @default(false)
+  is_active     Boolean                  @default(true)
+  created_at    DateTime                 @default(now())
+  updated_at    DateTime                 @updatedAt
+  category      categories               @relation(fields: [category_id], references: [id], onDelete: Restrict)
+  unit          units                    @relation(fields: [unit_id], references: [id], onDelete: Restrict)
+  supplier      suppliers?               @relation(fields: [supplier_id], references: [id], onDelete: SetNull)
+  kitchen_lines kitchen_dispatch_lines[]
+  stock_batches stock_batches[]
+  stock_movements stock_movements[]
+}
+
+model inventory_snapshots {
+  id                   Int       @id @default(autoincrement())
+  product_id           Int       @unique
+  theoretical_quantity Decimal   @default(0.000000000000000000000000000000)
+  real_quantity        Decimal   @default(0.000000000000000000000000000000)
+  difference           Decimal   @default(0.000000000000000000000000000000)
+  total_value          Decimal   @default(0.000000000000000000000000000000)
+  last_updated_at      DateTime  @updatedAt
+  verified_at          DateTime?
+  verified_by          Int?
+}
+
+model inventory_counts {
+  id                   Int      @id @default(autoincrement())
+  product_id           Int
+  theoretical_quantity Decimal
+  real_quantity        Decimal
+  difference           Decimal
+  user_id              Int
+  notes                String?
+  created_at           DateTime @default(now())
+}
+
+model alerts {
+  id          Int           @id @default(autoincrement())
+  type        AlertType
+  product_id  Int
+  severity    AlertSeverity @default(WARNING)
+  message     String
+  is_resolved Boolean       @default(false)
+  resolved_at DateTime?
+  created_at  DateTime      @default(now())
+}
+
+model daily_consumption {
+  id                Int      @id @default(autoincrement())
+  product_id        Int
+  quantity_consumed Decimal
+  user_id           Int
+  notes             String?
+  created_at        DateTime @default(now())
+}
+
+model activity_logs {
+  id          Int      @id @default(autoincrement())
+  user_id     Int
+  action      String
+  entity_type String?
+  entity_id   Int?
+  changes     String?  @db.LongText
+  ip_address  String?
+  created_at  DateTime @default(now())
+}
+
+model stock_batches {
+  id                 Int                      @id @default(autoincrement())
+  product_id         Int
+  user_id            Int
+  batch_number       String
+  quantity_initial   Decimal
+  quantity_remaining Decimal
+  purchase_price     Decimal
+  entry_date         DateTime                 @default(now())
+  expiration_date    DateTime?
+  notes              String?
+  created_at         DateTime                 @default(now())
+  updated_at         DateTime                 @updatedAt
+  product            products                 @relation(fields: [product_id], references: [id], onDelete: Restrict)
+  kitchen_lines      kitchen_dispatch_lines[]
+  stock_movements    stock_movements[]
+}
+
+model stock_movements {
+  id                    Int                     @id @default(autoincrement())
+  product_id            Int
+  batch_id              Int?
+  type                  StockMovementType
+  quantity              Decimal
+  reason                String?
+  reference_number      String?
+  user_id               Int
+  created_at            DateTime                @default(now())
+  product               products                @relation(fields: [product_id], references: [id], onDelete: Restrict)
+  batch                 stock_batches?          @relation(fields: [batch_id], references: [id], onDelete: SetNull)
+  kitchen_dispatch_line kitchen_dispatch_lines? @relation("KitchenDispatchOrigin")
+  kitchen_return_event  kitchen_events?         @relation("KitchenReturnStockMovement")
+}
+
+model categories_materiels {
+  id          Int      @id @default(autoincrement())
+  name        String   @unique
+  description String?
+  is_active   Boolean  @default(true)
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+}
+
+model materiels {
+  id             Int       @id @default(autoincrement())
+  name           String
+  category_id    Int
+  reference      String?   @unique
+  description    String?
+  quantity       Decimal   @default(0.000000000000000000000000000000)
+  minimum_stock  Decimal   @default(1.000000000000000000000000000000)
+  unit           String    @default("unité")
+  location       String?
+  purchase_price Decimal?
+  purchase_date  DateTime?
+  supplier       String?
+  is_active      Boolean   @default(true)
+  created_at     DateTime  @default(now())
+  updated_at     DateTime  @updatedAt
+
+  @@map("materiels")
+}
+
+model materiel_movements {
+  id               Int                  @id @default(autoincrement())
+  materiel_id      Int
+  type             MaterielMovementType
+  quantity         Decimal
+  reason           String?
+  reference_number String?
+  user_id          Int
+  created_at       DateTime             @default(now())
+
+  @@index([materiel_id])
+  @@index([user_id])
+  @@map("materiel_movements")
+}
+
+model auditlog {
+  id        Int             @id @default(autoincrement())
+  userId    Int
+  action    auditlog_action
+  entity    String
+  entityId  Int?
+  ip        String?
+  timestamp DateTime        @default(now())
+
+  @@index([userId], map: "AuditLog_userId_idx")
+}
+
+model otpcode {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  codeHash  String
+  expiresAt DateTime
+}
+
+model role {
+  id             Int              @id @default(autoincrement())
+  name           String           @unique(map: "Role_name_key")
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @default(now())
+  rolepermission rolepermission[]
+  userRoles      UserRole[]
+
+  @@map("Role")
+}
+
+model rolepermission {
+  id           Int        @id @default(autoincrement())
+  roleId       Int
+  permissionId Int
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade, map: "RolePermission_permissionId_fkey")
+  role         role       @relation(fields: [roleId], references: [id], onDelete: Cascade, map: "RolePermission_roleId_fkey")
+
+  @@unique([roleId, permissionId], map: "RolePermission_roleId_permissionId_key")
+  @@index([permissionId], map: "RolePermission_permissionId_fkey")
+  @@map("RolePermission")
+}
+
+model session {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  token     String   @unique(map: "Session_token_key")
+  expiresAt DateTime
+  ipAddress String?
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  @@index([userId], map: "Session_userId_idx")
+}
+
+model setting {
+  id        Int      @id @default(autoincrement())
+  key       String   @unique(map: "Setting_key_key")
+  value     String?
+  updatedAt DateTime
+}
+
+model tenant {
+  id        Int      @id @default(autoincrement())
+  name      String   @unique(map: "Tenant_name_key")
+  createdAt DateTime @default(now())
+}
+
+model tenantrole {
+  id       Int @id @default(autoincrement())
+  tenantId Int
+  roleId   Int
+
+  @@unique([tenantId, roleId], map: "TenantRole_tenantId_roleId_key")
+}
+
+model tenantuser {
+  id       Int @id @default(autoincrement())
+  tenantId Int
+  userId   Int
+
+  @@unique([tenantId, userId], map: "TenantUser_tenantId_userId_key")
+}
+
+model user {
+  id                 Int                  @id @default(autoincrement())
+  email              String               @unique(map: "User_email_key")
+  passwordHash       String
+  status             user_status          @default(ACTIVE)
+  fullName           String
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime             @default(now())
+  userRoles          UserRole[]
+  userpermission     userpermission[]
+  kitchen_dispatches kitchen_dispatches[] @relation("KitchenDispatchCreator")
+  kitchen_events     kitchen_events[]     @relation("KitchenEventActor")
+
+  @@map("User")
+}
+
+model userpermission {
+  id           Int        @id @default(autoincrement())
+  userId       Int
+  permissionId Int
+  user         user       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, permissionId], map: "UserPermission_userId_permissionId_key")
+  @@map("UserPermission")
+}
+
+/// One header represents a single stock issue sent to the kitchen.
+model kitchen_dispatches {
+  id         Int                      @id @default(autoincrement())
+  reference  String                   @unique @db.VarChar(100)
+  created_by Int
+  created_at DateTime                 @default(now())
+  creator    user                     @relation("KitchenDispatchCreator", fields: [created_by], references: [id], onDelete: Restrict)
+  lines      kitchen_dispatch_lines[]
+
+  @@index([created_at])
+  @@index([created_by])
+  @@map("kitchen_dispatches")
+}
+
+/// One line per FIFO stock movement, preserving the source batch.
+model kitchen_dispatch_lines {
+  id                 Int                @id @default(autoincrement())
+  dispatch_id        Int
+  origin_movement_id Int                @unique
+  product_id         Int
+  batch_id           Int
+  sent_quantity      Decimal
+  served_quantity    Decimal            @default(0)
+  returned_quantity  Decimal            @default(0)
+  dispatch           kitchen_dispatches @relation(fields: [dispatch_id], references: [id], onDelete: Restrict)
+  origin_movement    stock_movements    @relation("KitchenDispatchOrigin", fields: [origin_movement_id], references: [id], onDelete: Restrict)
+  product            products           @relation(fields: [product_id], references: [id], onDelete: Restrict)
+  batch              stock_batches      @relation(fields: [batch_id], references: [id], onDelete: Restrict)
+  events             kitchen_events[]
+
+  @@index([dispatch_id])
+  @@index([product_id])
+  @@index([batch_id])
+  @@map("kitchen_dispatch_lines")
+}
+
+/// Append-only record of service and return operations. A return event can
+/// point to exactly one incoming stock movement, preventing duplicate linkage.
+model kitchen_events {
+  id                Int                    @id @default(autoincrement())
+  dispatch_line_id  Int
+  type              KitchenEventType
+  quantity          Decimal
+  actor_id          Int
+  stock_movement_id Int?                   @unique
+  operation_key     String                 @unique @db.VarChar(100)
+  created_at        DateTime               @default(now())
+  dispatch_line     kitchen_dispatch_lines @relation(fields: [dispatch_line_id], references: [id], onDelete: Restrict)
+  actor             user                   @relation("KitchenEventActor", fields: [actor_id], references: [id], onDelete: Restrict)
+  stock_movement    stock_movements?       @relation("KitchenReturnStockMovement", fields: [stock_movement_id], references: [id], onDelete: Restrict)
+
+  @@index([dispatch_line_id, created_at])
+  @@index([actor_id])
+  @@map("kitchen_events")
+}
+
+model UserRole {
+  id     Int  @id @default(autoincrement())
+  userId Int
+  roleId Int
+  role   role @relation(fields: [roleId], references: [id], onDelete: Cascade, map: "UserRoleLink_role_fkey")
+  user   user @relation(fields: [userId], references: [id], onDelete: Cascade, map: "UserRoleLink_user_fkey")
+
+  @@unique([userId, roleId], map: "UserRoleLink_userId_roleId_key")
+  @@index([roleId], map: "UserRoleLink_role_fkey")
+  @@map("user_role_link")
+}
+
+enum StockMovementType {
+  IN
+  OUT
+  LOSS
+  EXPIRED
+  ADJUSTMENT
+}
+
+enum KitchenEventType {
+  SERVED
+  RETURNED
+}
+
+enum AlertType {
+  LOW_STOCK
+  EXPIRED
+  EXPIRING_SOON
+  RUPTURE
+  EXCESS
+}
+
+enum AlertSeverity {
+  INFO
+  WARNING
+  CRITICAL
+}
+
+enum MaterielMovementType {
+  IN
+  OUT
+  LOSS
+  BROKEN
+  OLD
+  ADJUSTMENT
+}
+
+enum auditlog_action {
+  LOGIN
+  LOGOUT
+  CREATE_USER
+  UPDATE_USER
+  DELETE_USER
+  CREATE_ROLE
+  UPDATE_ROLE
+  DELETE_ROLE
+  CREATE_PERMISSION
+  UPDATE_PERMISSION
+  DELETE_PERMISSION
+  SESSION_EXPIRE
+  SESSION_REVOKE
+}
+
+enum user_status {
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+}
