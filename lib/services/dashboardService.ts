@@ -76,11 +76,14 @@ import { endOfDay, startOfDay, subDays } from 'date-fns';
 export async function getDailyConsumptionChart(days: number = 7, start?: Date, end?: Date) {
   const fromDate = start ? startOfDay(start) : startOfDay(subDays(new Date(), days));
   const toDate = end ? endOfDay(end) : undefined;
-  const consumptions = await prisma.daily_consumption.findMany({
-    where: { created_at: { gte: fromDate, ...(toDate ? { lte: toDate } : {}) } },
+  const consumptions = await prisma.stock_movements.findMany({
+    where: {
+      type: { in: ['OUT', 'LOSS', 'EXPIRED'] },
+      created_at: { gte: fromDate, ...(toDate ? { lte: toDate } : {}) },
+    },
     select: {
       created_at: true,
-      quantity_consumed: true,
+      quantity: true,
     },
     orderBy: { created_at: 'asc' },
   });
@@ -88,7 +91,7 @@ export async function getDailyConsumptionChart(days: number = 7, start?: Date, e
   const grouped: Record<string, number> = {};
   for (const c of consumptions) {
     const date = c.created_at.toISOString().split('T')[0];
-    grouped[date] = (grouped[date] || 0) + Number(c.quantity_consumed);
+    grouped[date] = (grouped[date] || 0) + Number(c.quantity);
   }
   return Object.entries(grouped).map(([date, total_consumed]) => ({ date, total_consumed }));
 }
@@ -100,6 +103,7 @@ export interface TopConsumedProducts {
   product_id: number;
   name: string;
   category_name: string | null;
+  unit: string | null;
   total_consumed: number;
   consumption_count: number;
   avg_consumption: number;
@@ -107,31 +111,35 @@ export interface TopConsumedProducts {
 export async function getTopConsumedProducts(limit: number = 10, start?: Date, end?: Date): Promise<TopConsumedProducts[]> {
   const fromDate = start ? startOfDay(start) : subDays(new Date(), 30);
   const toDate = end ? endOfDay(end) : undefined;
-  const consumptions = await prisma.daily_consumption.findMany({
-    where: { created_at: { gte: fromDate, ...(toDate ? { lte: toDate } : {}) } },
+  const consumptions = await prisma.stock_movements.findMany({
+    where: {
+      type: { in: ['OUT', 'LOSS', 'EXPIRED'] },
+      created_at: { gte: fromDate, ...(toDate ? { lte: toDate } : {}) },
+    },
     select: {
       product_id: true,
-      quantity_consumed: true,
+      quantity: true,
     },
   });
   const productIds = [...new Set(consumptions.map((item) => item.product_id))];
   const products = productIds.length
     ? await prisma.products.findMany({
         where: { id: { in: productIds } },
-        select: { id: true, name: true, category: { select: { name: true } } },
+        select: { id: true, name: true, category: { select: { name: true } }, unit: { select: { name: true, abbreviation: true } } },
       })
     : [];
   const productById = new Map(products.map((product) => [product.id, product]));
   // Aggregate by product
-  const map = new Map<number, { name: string; category_name: string | null; total: number; count: number }>();
+  const map = new Map<number, { name: string; category_name: string | null; unit: string | null; total: number; count: number }>();
   for (const c of consumptions) {
     const entry = map.get(c.product_id) || {
       name: productById.get(c.product_id)?.name || '',
       category_name: productById.get(c.product_id)?.category?.name || null,
+      unit: productById.get(c.product_id)?.unit?.abbreviation || productById.get(c.product_id)?.unit?.name || null,
       total: 0,
       count: 0,
     };
-    entry.total += Number(c.quantity_consumed);
+    entry.total += Number(c.quantity);
     entry.count++;
     map.set(c.product_id, entry);
   }
@@ -140,6 +148,7 @@ export async function getTopConsumedProducts(limit: number = 10, start?: Date, e
       product_id,
       name: v.name,
       category_name: v.category_name,
+      unit: v.unit,
       total_consumed: v.total,
       consumption_count: v.count,
       avg_consumption: v.count ? v.total / v.count : 0,
@@ -199,17 +208,22 @@ export async function getStockLossesReport(start?: Date, end?: Date): Promise<St
 /**
  * Get recent stock movements (Prisma version)
  */
-export async function getRecentMovements(limit: number = 20, start?: Date, end?: Date) {
+export async function getRecentMovements(
+  limit: number | null = 20,
+  start?: Date,
+  end?: Date
+) {
   const dateFilter = start || end
     ? { created_at: { ...(start ? { gte: startOfDay(start) } : {}), ...(end ? { lte: endOfDay(end) } : {}) } }
     : {};
   const movements = await prisma.stock_movements.findMany({
     where: dateFilter,
     orderBy: { created_at: 'desc' },
-    take: limit,
+    ...(limit !== null ? { take: limit } : {}),
     include: {
-      product: { select: { name: true } },
-      batch: { select: { batch_number: true } },
+      product: { select: { name: true, sku: true, category: { select: { name: true } }, unit: { select: { name: true, abbreviation: true } } } },
+      batch: { select: { batch_number: true, purchase_price: true } },
+      kitchen_dispatch_line: { select: { dispatch: { select: { reference: true } } } },
     },
   });
   // Fetch user names in batch for all user_ids
@@ -221,13 +235,21 @@ export async function getRecentMovements(limit: number = 20, start?: Date, end?:
   const userMap = new Map(users.map(u => [u.id, u.fullName]));
   return movements.map(m => ({
     id: m.id,
+    product_id: m.product_id,
     type: m.type,
     quantity: Number(m.quantity),
+    sku: m.product?.sku || null,
+    category_name: m.product?.category?.name || 'Sans catégorie',
+    unit: m.product?.unit?.abbreviation || m.product?.unit?.name || null,
+    unit_cost: m.batch?.purchase_price == null ? null : Number(m.batch.purchase_price),
+    movement_value: m.batch?.purchase_price == null ? null : Number(m.quantity) * Number(m.batch.purchase_price),
     reason: m.reason,
     created_at: m.created_at,
     product_name: m.product?.name || '',
     user_name: userMap.get(m.user_id) || '',
     batch_number: m.batch?.batch_number || '',
+    reference_number: m.reference_number || m.kitchen_dispatch_line?.dispatch.reference || null,
+    destination: m.kitchen_dispatch_line ? 'CUISINE' : null,
   }));
 }
 

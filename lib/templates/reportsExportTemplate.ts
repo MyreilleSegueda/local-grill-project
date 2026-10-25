@@ -41,10 +41,11 @@ const MARGIN = { top: 42, left: 8, right: 8, bottom: 35 };
 
 // Interfaces
 interface DailyConsumption { date: string; total_consumed: number; }
-interface TopProduct { product_id: number; name: string; category_name: string; total_consumed: number; avg_consumption: number; }
-interface Losses { total_loss_value: number; expired_count: number; loss_percentage: number; }
+interface ConsumptionDetail { date: string; product_name: string | null; sku?: string | null; quantity: number; unit: string | null; unit_cost?: number | null; value?: number | null; }
+interface TopProduct { product_id: number; name: string; category_name: string | null; unit?: string | null; total_consumed: number; avg_consumption: number; }
+interface Losses { total_loss_value: number; total_losses?: number; expired_count: number; loss_percentage: number; }
 interface InventoryHealth { accuracy_percentage: number; total_items: number; discrepancies: number; }
-interface Movement { id: number; product_name: string; quantity: number; type: string; created_at: string; user_name: string; }
+interface Movement { id: number; product_id?: number; product_name: string; sku?: string | null; quantity: number; unit?: string | null; unit_cost?: number | null; movement_value?: number | null; type: string; reason?: string | null; created_at: string; user_name: string; }
 interface AppUser { id: number; name: string; email: string; role: string; created_at: string; }
 interface Role { id: number; name: string; description: string; }
 interface Permission { id: number; name: string; description: string; }
@@ -52,12 +53,14 @@ interface Category { id: number; name: string; }
 interface Supplier { id: number; name: string; email: string; phone: string; }
 interface Unit { id: number; name: string; symbol: string; }
 interface AlertItem { id: number; type: string; severity: string; message: string; is_resolved: boolean; created_at: string; }
-interface ActivityLog { id: number; user_id: number; action: string; entity_type: string; created_at: string; }
+interface ActivityLog { id: number; user_id: number; user_name?: string | null; action: string; entity_type: string | null; entity_id?: number | null; created_at: string; }
 interface KPIs { totalStockValue: number; totalProducts: number; criticalAlerts: number; totalMovements: number; }
 
 export interface ReportExportData {
   kpis: KPIs;
   daily_consumption: DailyConsumption[];
+  consumption_details?: ConsumptionDetail[];
+  loss_movements?: Array<{ product_name: string; quantity: number; unit: string | null; cause: string | null; type: string; value: number | null; created_at: string }>;
   top_products: TopProduct[];
   losses: Losses;
   inventory_health: InventoryHealth;
@@ -92,6 +95,11 @@ function fmt(n: number, dec = 0): string {
 function fmtDate(d: string): string {
   return d ? new Date(d).toLocaleDateString('fr-FR', { day: '2-digit', month: 'short', year: 'numeric' }) : '—';
 }
+const movementLabel = (type: string) => ({ IN: 'Entrée de stock', OUT: 'Sortie de stock', LOSS: 'Perte', EXPIRED: 'Produit périmé', ADJUSTMENT: 'Ajustement de stock' }[type] ?? type);
+const severityLabel = (value: string) => ({ CRITICAL: 'Critique', WARNING: 'Avertissement', INFO: 'Information' }[value] ?? value);
+const alertTypeLabel = (value: string) => ({ LOW_STOCK: 'Stock faible', EXPIRED: 'Produit périmé', EXPIRING_SOON: 'Péremption proche', RUPTURE: 'Rupture de stock', EXCESS: 'Stock excédentaire' }[value] ?? value);
+const actionLabel = (value: string) => ({ STOCK_ADJUSTMENT: 'Ajustement du stock', STOCK_IN: 'Entrée de stock', STOCK_OUT: 'Sortie de stock', LOGIN: 'Connexion', LOGOUT: 'Déconnexion' }[value] ?? value.replaceAll('_', ' ').toLowerCase());
+const roleLabel = (value: string) => ({ ADMIN: 'Administrateur', ADMINISTRATOR: 'Administrateur', GERANT: 'Gerant', MANAGER: 'Responsable', STOCK_MANAGER: 'Responsable stock', USER: 'Utilisateur', UTILISATEUR: 'Utilisateur', COOK: 'Cuisinier', CASHIER: 'Caissier' }[value.toUpperCase()] ?? value);
 
 // PDF Template Class
 class ReportsPDFTemplate {
@@ -196,7 +204,7 @@ class ReportsPDFTemplate {
     const doc = this.doc;
     const W = doc.internal.pageSize.getWidth();
     
-    this.totalPages = 3;
+    this.totalPages = 1;
 
     // Page 1 - Cover + KPIs
     this.drawHeader('RAPPORT DE GESTION', `Periode: ${start} → ${end}`);
@@ -244,8 +252,8 @@ class ReportsPDFTemplate {
 
     autoTable(doc, {
       startY: cardY + cardH + 13,
-      head: [['Date', 'Consommation']],
-      body: data.daily_consumption.map(d => [d.date, fmt(d.total_consumed)]),
+      head: data.consumption_details?.length ? [['Date', 'Produit', 'Référence', 'Quantité consommée', 'Unité', "Coût d'achat unitaire (FCFA)", "Coût d'achat consommé (FCFA)"]] : [['Date', 'Consommation totale (quantité)']],
+      body: data.consumption_details?.length ? data.consumption_details.map(d => [fmtDate(d.date), d.product_name ?? '—', d.sku || '—', fmt(d.quantity), d.unit || '—', d.unit_cost == null ? '—' : fmt(d.unit_cost, 2), d.value == null ? '—' : fmt(d.value, 2)]) : data.daily_consumption.map(d => [fmtDate(d.date), fmt(d.total_consumed)]),
       styles: { fontSize: 8, cellPadding: 3, textColor: dark },
       headStyles: {
         fillColor: BRAND.colors.primary,
@@ -263,8 +271,8 @@ class ReportsPDFTemplate {
 
     autoTable(doc, {
       startY: cardY + cardH + 13,
-      head: [['Produit', 'Categorie', 'Total', 'Moy.']],
-      body: data.top_products.map(p => [p.name, p.category_name, fmt(p.total_consumed), p.avg_consumption.toFixed(1)]),
+      head: [['Rang', 'Produit', 'Catégorie', 'Quantité totale consommée', 'Moyenne par relevé']],
+      body: data.top_products.map((p, i) => [i + 1, p.name || '', p.category_name ?? '', `${fmt(p.total_consumed)}${p.unit ? ` ${p.unit}` : ''}`, `${p.avg_consumption.toFixed(2)}${p.unit ? ` ${p.unit}` : ''}`]),
       styles: { fontSize: 8, cellPadding: 3, textColor: dark },
       headStyles: { fillColor: accent, textColor: white, fontStyle: 'bold', fontSize: 8 },
       alternateRowStyles: { fillColor: light },
@@ -276,13 +284,25 @@ class ReportsPDFTemplate {
     // Page 2 - Movements & Alerts
     doc.addPage();
     this.drawHeader('MOUVEMENTS & ALERTES', `Periode: ${start} → ${end}`);
-    this.drawFooter();
     this.currentPage++;
 
     autoTable(doc, {
       startY: 45,
-      head: [['Produit', 'Qte', 'Type', 'Date', 'Utilisateur']],
-      body: data.movements.map(m => [m.product_name, m.quantity, m.type, fmtDate(m.created_at), m.user_name]),
+      head: [['Produit', 'Référence', 'Quantité', 'Unité', "Coût d'achat unitaire (FCFA)", "Valeur au coût d'achat (FCFA)", 'Type de mouvement', 'Date', 'Utilisateur', 'Motif']],
+body: data.movements.map(m => {
+  return [
+    m.product_name || '',
+    m.sku || '—',
+    fmt(m.quantity),
+    m.unit || '—',
+    m.unit_cost == null ? '—' : fmt(m.unit_cost, 2),
+    m.movement_value == null ? '—' : fmt(m.movement_value, 2),
+    movementLabel(m.type),
+    fmtDate(m.created_at),
+    m.user_name || '',
+    m.reason || 'Non renseigné',
+  ];
+}),
       styles: { fontSize: 8, cellPadding: 3, textColor: dark },
       headStyles: {
         fillColor: BRAND.colors.primary,
@@ -294,38 +314,51 @@ class ReportsPDFTemplate {
       },
       alternateRowStyles: { fillColor: light },
       columnStyles: { 1: { halign: 'center' }, 2: { halign: 'center' } },
-      margin: { left: 14, right: W / 2 + 4 },
-      tableWidth: W / 2 - 18,
+      margin: { left: 14, right: 14 },
+      tableWidth: W - 28,
       didParseCell: (h) => {
-        if (h.section !== 'body' || h.column.index !== 2) return;
-        const v = String(h.cell.raw ?? '');
-        if (v === 'ENTREE') h.cell.styles.textColor = [5, 150, 105] as [number, number, number];
-        if (v === 'SORTIE') h.cell.styles.textColor = [220, 38, 38] as [number, number, number];
-      },
+  if (h.section !== 'body' || h.column.index !== 3) return;
+
+  const type = String(h.cell.raw ?? '');
+
+  if (type === movementLabel('IN')) {
+    h.cell.styles.textColor = [5, 150, 105];
+    h.cell.styles.fontStyle = 'bold';
+  } else if (type === movementLabel('OUT')) {
+    h.cell.styles.textColor = [37, 99, 235];
+    h.cell.styles.fontStyle = 'bold';
+  } else if (type === movementLabel('LOSS') || type === movementLabel('EXPIRED')) {
+    h.cell.styles.textColor = [220, 38, 38];
+    h.cell.styles.fontStyle = 'bold';
+  } else if (type === movementLabel('ADJUSTMENT')) {
+    h.cell.styles.textColor = [124, 58, 237];
+    h.cell.styles.fontStyle = 'bold';
+  }
+ },
     });
 
+    const movementEndY = (doc as jsPDF & { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY ?? 45;
     autoTable(doc, {
-      startY: 45,
-      head: [['Type', 'Severite', 'Message', 'Resolue']],
-      body: data.alerts.map(a => [a.type, a.severity, a.message.slice(0, 38), a.is_resolved ? 'Oui' : 'Non']),
+      startY: movementEndY + 8,
+      head: [["Type d’alerte", 'Gravité', 'Description', 'État', 'Date']],
+      body: data.alerts.map(a => [alertTypeLabel(a.type), severityLabel(a.severity), a.message, a.is_resolved ? 'Résolue' : 'Non résolue', fmtDate(a.created_at)]),
       styles: { fontSize: 8, cellPadding: 3, textColor: dark },
       headStyles: { fillColor: [217, 119, 6] as [number, number, number], textColor: white, fontStyle: 'bold', fontSize: 8 },
       alternateRowStyles: { fillColor: light },
       columnStyles: { 3: { halign: 'center' } },
-      margin: { left: W / 2 + 4, right: 14 },
-      tableWidth: W / 2 - 18,
+      margin: { left: 14, right: 14 },
+      tableWidth: W - 28,
     });
 
     // Page 3 - Users & Logs
     doc.addPage();
     this.drawHeader('UTILISATEURS & LOGS', `Periode: ${start} → ${end}`);
-    this.drawFooter();
     this.currentPage++;
 
     autoTable(doc, {
       startY: 45,
-      head: [['Nom', 'Email', 'Role', 'Depuis']],
-      body: data.users.map(u => [u.name, u.email, u.role, fmtDate(u.created_at)]),
+      head: [['Nom', 'E-mail', 'Rôle', 'Création du compte']],
+      body: data.users.map(u => [u.name, u.email, roleLabel(u.role), fmtDate(u.created_at)]),
       styles: { fontSize: 8, cellPadding: 3, textColor: dark },
       headStyles: {
         fillColor: BRAND.colors.primary,
@@ -342,8 +375,8 @@ class ReportsPDFTemplate {
 
     autoTable(doc, {
       startY: 45,
-      head: [['User ID', 'Action', 'Entite', 'Date']],
-      body: data.activity_logs.map(l => [l.user_id, l.action, l.entity_type, fmtDate(l.created_at)]),
+      head: [['Utilisateur', 'Action', 'Élément concerné', 'Date']],
+      body: data.activity_logs.map(l => [l.user_name || `Utilisateur #${l.user_id}`, actionLabel(l.action), l.entity_type ? `${l.entity_type}${l.entity_id ? ` #${l.entity_id}` : ''}` : '', fmtDate(l.created_at)]),
       styles: { fontSize: 8, cellPadding: 3, textColor: dark },
       headStyles: { fillColor: accent, textColor: white, fontStyle: 'bold', fontSize: 8 },
       alternateRowStyles: { fillColor: light },
@@ -351,6 +384,29 @@ class ReportsPDFTemplate {
       tableWidth: W / 2 - 18,
     });
 
+    doc.addPage();
+    this.currentPage++;
+    this.drawHeader('PERTES & GASPILLAGE', `Periode : ${start} - ${end}`);
+    autoTable(doc, {
+      startY: 45,
+      head: data.loss_movements?.length
+        ? [['Produit', 'Quantite perdue', 'Unite', 'Cause', 'Valeur (FCFA)', 'Type', 'Date']]
+        : [['Valeur totale des pertes (FCFA)', 'Mouvements de perte', 'Mouvements de produits expires', 'Pertes / valeur du stock (%)']],
+      body: data.loss_movements?.length
+        ? data.loss_movements.map(loss => [loss.product_name, `${fmt(loss.quantity)}${loss.unit ? ` ${loss.unit}` : ''}`, loss.unit ?? '', loss.cause ?? '', loss.value === null ? '—' : fmt(loss.value), movementLabel(loss.type), fmtDate(loss.created_at)])
+        : [[fmt(data.losses.total_loss_value), data.losses.total_losses ?? 0, data.losses.expired_count, `${data.losses.loss_percentage.toFixed(2)} %`]],
+      styles: { fontSize: 8, cellPadding: 3, textColor: dark },
+      headStyles: { fillColor: BRAND.colors.primary, textColor: white, fontStyle: 'bold', fontSize: 8 },
+      alternateRowStyles: { fillColor: light },
+      margin: { left: 14, right: 14 },
+    });
+
+    this.totalPages = (doc.internal as unknown as { pages: unknown[] }).pages.length - 1;
+    for (let page = 1; page <= this.totalPages; page++) {
+      this.currentPage = page;
+      doc.setPage(page);
+      this.drawFooter();
+    }
     return Buffer.from(doc.output('arraybuffer'));
   }
 }
@@ -364,10 +420,14 @@ export function generateReportsXLSX(data: ReportExportData, start: string, end: 
   const wb = XLSX.utils.book_new();
   const now = new Date().toLocaleDateString('fr-FR');
 
-  const addSheet = (rows: Record<string, string | number | boolean>[], name: string) => {
-    if (!rows.length) return;
-    const ws = XLSX.utils.json_to_sheet(rows);
-    ws['!cols'] = Object.keys(rows[0]).map(k => ({ wch: Math.max(k.length + 4, 16) }));
+  const addSheet = (rows: Record<string, string | number | boolean>[], name: string, headers?: string[]) => {
+    const ws = rows.length
+      ? XLSX.utils.json_to_sheet(rows)
+      : headers?.length
+        ? XLSX.utils.aoa_to_sheet([headers])
+        : XLSX.utils.json_to_sheet([{ 'Information': 'Aucune donnée disponible pour cette période.' }]);
+    if (headers?.length && rows.length === 0) ws['!cols'] = headers.map(k => ({ wch: Math.max(k.length + 4, 16) }));
+    else if (rows.length) ws['!cols'] = Object.keys(rows[0]).map(k => ({ wch: Math.max(k.length + 4, 16) }));
     XLSX.utils.book_append_sheet(wb, ws, name);
   };
 
@@ -404,13 +464,39 @@ export function generateReportsXLSX(data: ReportExportData, start: string, end: 
   }], 'KPIs');
 
   // Data sheets
-  addSheet(data.daily_consumption.map(d => ({ 'Date': d.date, 'Consommation': d.total_consumed })), 'Consommation');
-  addSheet(data.top_products.map(p => ({ 'Produit': p.name, 'Categorie': p.category_name, 'Total': p.total_consumed, 'Moyenne': +p.avg_consumption.toFixed(2) })), 'Top Produits');
-  addSheet(data.movements.map(m => ({ 'Produit': m.product_name, 'Quantite': m.quantity, 'Type': m.type, 'Date': fmtDate(m.created_at), 'Utilisateur': m.user_name })), 'Mouvements');
-  addSheet(data.alerts.map(a => ({ 'Type': a.type, 'Severite': a.severity, 'Message': a.message, 'Resolue': a.is_resolved ? 'Oui' : 'Non', 'Date': fmtDate(a.created_at) })), 'Alertes');
-  addSheet([{ 'Pertes (FCFA)': data.losses.total_loss_value, 'Expires': data.losses.expired_count, '% perte': +data.losses.loss_percentage.toFixed(2) }], 'Pertes');
-  addSheet(data.users.map(u => ({ 'Nom': u.name, 'Email': u.email, 'Role': u.role, 'Depuis': fmtDate(u.created_at) })), 'Utilisateurs');
-  addSheet(data.activity_logs.map(l => ({ 'User ID': l.user_id, 'Action': l.action, 'Entite': l.entity_type, 'Date': fmtDate(l.created_at) })), 'Logs');
+  addSheet(data.consumption_details?.length ? data.consumption_details.map(d => ({ 'Date': fmtDate(d.date), 'Produit': d.product_name ?? '', 'Référence': d.sku ?? '—', 'Quantité consommée': d.quantity, 'Unité': d.unit ?? '—', "Coût d'achat unitaire (FCFA)": d.unit_cost ?? '—', "Coût d'achat consommé (FCFA)": d.value ?? '—' })) : data.daily_consumption.map(d => ({ 'Date': fmtDate(d.date), 'Consommation totale (quantité)': d.total_consumed })), 'Consommation');
+  addSheet(data.top_products.map((p, i) => ({ 'Rang': i + 1, 'Produit': p.name || '', 'Catégorie': p.category_name ?? '', 'Quantité totale consommée': p.total_consumed, 'Unité': p.unit ?? '', 'Moyenne par relevé': +p.avg_consumption.toFixed(2), 'Unité moyenne': p.unit ?? '' })), 'Top Produits');
+  // Préparer les mouvements selon leur type réel
+const movementRows = data.movements.map(m => {
+  return {
+    'Produit': m.product_name || '',
+    'Référence': m.sku ?? '—',
+    'Quantité': m.quantity,
+    'Unité': m.unit ?? '—',
+    "Coût d'achat unitaire (FCFA)": m.unit_cost ?? '—',
+    "Valeur au coût d'achat (FCFA)": m.movement_value ?? '—',
+    'Type de mouvement': movementLabel(m.type),
+    'Date': fmtDate(m.created_at),
+    'Effectué par': m.user_name,
+    'Motif': m.reason ?? '',
+  };
+});
+
+// Feuille des entrées de stock
+const movementHeaders = ['Produit', 'Référence', 'Quantité', 'Unité', "Coût d'achat unitaire (FCFA)", "Valeur au coût d'achat (FCFA)", 'Type de mouvement', 'Date', 'Effectué par', 'Motif'];
+addSheet(movementRows.filter(m => m['Type de mouvement'] === movementLabel('IN')), 'Entrées', movementHeaders);
+
+addSheet(
+  movementRows.filter(m => ['OUT', 'LOSS', 'EXPIRED'].map(movementLabel).includes(m['Type de mouvement'])),
+  'Sorties',
+  movementHeaders
+);
+
+addSheet(movementRows, 'Mouvements globaux');
+  addSheet(data.alerts.map(a => ({ 'Type alerte': alertTypeLabel(a.type), 'Gravité': severityLabel(a.severity), 'Description': a.message, 'État': a.is_resolved ? 'Résolue' : 'Non résolue', 'Date': fmtDate(a.created_at) })), 'Alertes');
+  addSheet(data.loss_movements?.length ? data.loss_movements.map(l => ({ 'Produit': l.product_name, 'Quantité perdue': l.quantity, 'Unité': l.unit ?? '', 'Cause': l.cause ?? '', 'Valeur (FCFA)': l.value ?? '', 'Type': movementLabel(l.type), 'Date': fmtDate(l.created_at) })) : [{ 'Valeur totale des pertes (FCFA)': data.losses.total_loss_value, 'Nombre de mouvements de perte': data.losses.total_losses ?? 0, 'Nombre de mouvements de produits expirés': data.losses.expired_count, 'Pertes / valeur du stock (%)': +data.losses.loss_percentage.toFixed(2) }], 'Pertes');
+  addSheet(data.users.map(u => ({ 'Nom': u.name, 'E-mail': u.email, 'Rôle': roleLabel(u.role), 'Création du compte': fmtDate(u.created_at) })), 'Utilisateurs');
+  addSheet(data.activity_logs.map(l => ({ 'Utilisateur': l.user_name || `Utilisateur #${l.user_id}`, 'Action': actionLabel(l.action), 'Élément concerné': l.entity_type ?? '', 'Date': fmtDate(l.created_at) })), 'Logs');
   addSheet(data.categories.map(c => ({ 'ID': c.id, 'Categorie': c.name })), 'Categories');
   addSheet(data.suppliers.map(s => ({ 'Nom': s.name, 'Email': s.email, 'Tel': s.phone })), 'Fournisseurs');
   addSheet(data.units.map(u => ({ 'Unite': u.name, 'Symbole': u.symbol })), 'Unites');
