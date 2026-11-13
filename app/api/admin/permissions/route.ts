@@ -7,6 +7,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma }                    from "@/lib/prisma";
 import { verifyJwt }                 from "@/server/services/authService";
+import { ALL_PERMISSIONS }           from "@/lib/constants/permissions";
 
 function getToken(req: NextRequest): string | null {
   const c =
@@ -28,6 +29,11 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     const payload = verifyJwt(raw);
     if (!payload?.roles?.some((role) => role.toUpperCase() === "ADMIN"))
       return NextResponse.json({ error: "Accès refusé" }, { status: 403 });
+
+    await prisma.permission.createMany({
+      data: ALL_PERMISSIONS.map((name) => ({ name })),
+      skipDuplicates: true,
+    });
 
     const permissions = await prisma.permission.findMany({
       orderBy: { id: "asc" },

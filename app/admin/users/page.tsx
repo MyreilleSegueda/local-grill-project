@@ -9,7 +9,7 @@ import {
   Users, Mail, Shield, CheckCircle2, XCircle, Search,
   Plus, Pencil, Trash2, MoreHorizontal, ChevronLeft,
   ChevronRight, Eye, EyeOff, UserCheck, UserX, RefreshCw,
-  AlertTriangle, X, Check, Filter, SlidersHorizontal
+  AlertTriangle, X, Check, Filter, SlidersHorizontal, KeyRound
 } from "lucide-react";
 
 // ─── Color map per role ────────────────────────────────────────────────────────
@@ -19,6 +19,12 @@ const ROLE_COLORS: Record<string, { bg: string; text: string; border: string }> 
   KITCHEN_STAFF: { bg: "bg-amber-100 dark:bg-amber-900/30",text: "text-amber-700 dark:text-amber-400",border: "border-amber-200 dark:border-amber-700" },
   CASHIER:       { bg: "bg-violet-100 dark:bg-violet-900/30",text: "text-violet-700 dark:text-violet-400",border: "border-violet-200 dark:border-violet-700" },
 };
+const STORE_PERMISSION_OPTIONS = [
+  { name: "STORE_VIEW", label: "Consulter le stock et les retours" },
+  { name: "STORE_TRANSFER", label: "Transférer vers la Cuisine" },
+  { name: "STORE_RECEIVE", label: "Réceptionner les retours Cuisine" },
+  { name: "STORE_RETURN_STOCK", label: "Transférer vers le stock général" },
+] as const;
 function getRoleStyle(name: string) {
   return ROLE_COLORS[name?.toUpperCase()] ?? {
     bg: "bg-gray-100 dark:bg-gray-800", text: "text-gray-600 dark:text-gray-400", border: "border-gray-200 dark:border-gray-700"
@@ -256,11 +262,12 @@ function PasswordInput({ value, onChange, placeholder }: { value: string; onChan
 }
 
 // ─── Dropdown menu ────────────────────────────────────────────────────────────
-function ActionMenu({ user, onEdit, onDelete, onToggle }: {
+function ActionMenu({ user, onEdit, onDelete, onToggle, onPermissions }: {
   user: any;
   onEdit: () => void;
   onDelete: () => void;
   onToggle: () => void;
+  onPermissions: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -305,6 +312,14 @@ function ActionMenu({ user, onEdit, onDelete, onToggle }: {
             >
               <Pencil className="w-4 h-4 text-[#009B4D]" />
               Modifier
+            </button>
+            <button
+              onClick={() => { onPermissions(); setOpen(false); }}
+              className="w-full flex items-center gap-2.5 px-4 py-2.5 text-sm text-gray-700 dark:text-gray-300
+                hover:bg-gray-50 dark:hover:bg-slate-800 transition-colors"
+            >
+              <KeyRound className="w-4 h-4 text-cyan-700" />
+              Permissions Magasin
             </button>
             <button
               onClick={() => { onToggle(); setOpen(false); }}
@@ -381,13 +396,15 @@ export default function AdminUsers() {
 
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
-  const [modal, setModal] = useState<null | "add" | "edit" | "delete">(null);
+  const [modal, setModal] = useState<null | "add" | "edit" | "delete" | "permissions">(null);
   const [selectedUser, setSelectedUser] = useState<any>(null);
   const [form, setForm] = useState({
     email: "", fullName: "", password: "", roleId: "", status: "ACTIVE"
   });
   const [showFilters, setShowFilters] = useState(false);
   const [toast, setToast] = useState<{ type: "success" | "error"; message: string } | null>(null);
+  const [storePermissions, setStorePermissions] = useState<string[]>([]);
+  const [loadingStorePermissions, setLoadingStorePermissions] = useState(false);
 
   // ── Fetch ─────────────────────────────────────────────────────────────────
   const fetchAll = () => {
@@ -433,6 +450,46 @@ export default function AdminUsers() {
 
   const showToast = (type: "success" | "error", message: string) => {
     setToast({ type, message });
+  };
+
+  const openStorePermissions = async (user: { id: number; fullName: string }) => {
+    setSelectedUser(user);
+    setStorePermissions([]);
+    setLoadingStorePermissions(true);
+    setModal("permissions");
+    try {
+      const response = await fetch(`/api/admin/users/${user.id}/store-permissions`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "Erreur de chargement des permissions");
+      setStorePermissions(result.permissions ?? []);
+    } catch (error) {
+      setModal(null);
+      showToast("error", error instanceof Error ? error.message : "Erreur réseau");
+    } finally {
+      setLoadingStorePermissions(false);
+    }
+  };
+
+  const saveStorePermissions = async () => {
+    if (!selectedUser) return;
+    setSubmitting(true);
+    try {
+      const response = await fetch(`/api/admin/users/${selectedUser.id}/store-permissions`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ permissions: storePermissions }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "Erreur de sauvegarde");
+      showToast("success", "Permissions Magasin mises à jour.");
+      setModal(null);
+    } catch (error) {
+      showToast("error", error instanceof Error ? error.message : "Erreur réseau");
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   // ── CRUD ──────────────────────────────────────────────────────────────────
@@ -717,6 +774,7 @@ export default function AdminUsers() {
                         <ActionMenu
                           user={user}
                           onEdit={() => openModal("edit", user)}
+                          onPermissions={() => void openStorePermissions(user)}
                           onDelete={() => openModal("delete", user)}
                           onToggle={() => handleToggle(user)}
                         />
@@ -806,6 +864,7 @@ export default function AdminUsers() {
                     <ActionMenu
                       user={user}
                       onEdit={() => openModal("edit", user)}
+                      onPermissions={() => void openStorePermissions(user)}
                       onDelete={() => openModal("delete", user)}
                       onToggle={() => handleToggle(user)}
                     />
@@ -953,6 +1012,37 @@ export default function AdminUsers() {
                   : modal === "add" ? <Plus className="w-4 h-4" /> : <Check className="w-4 h-4" />
                 }
                 {submitting ? "Enregistrement…" : modal === "add" ? "Créer l'utilisateur" : "Enregistrer"}
+              </button>
+            </div>
+          </div>
+        </Modal>
+
+        <Modal open={modal === "permissions"} onClose={() => setModal(null)}>
+          <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl overflow-hidden">
+            <div className="flex items-center gap-3 border-b border-gray-100 px-6 py-5 dark:border-slate-800">
+              <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-cyan-50 text-cyan-700"><KeyRound className="h-5 w-5" /></div>
+              <div><h2 className="text-base font-bold text-gray-900 dark:text-white">Permissions Magasin</h2><p className="text-sm text-gray-400">{selectedUser?.fullName} · accès individuels</p></div>
+            </div>
+            <div className="space-y-3 px-6 py-5">
+              <p className="text-sm text-gray-500">Ces droits individuels s’ajoutent aux permissions du rôle. Décochez-les ici pour retirer l’accès direct sans modifier son rôle.</p>
+              {loadingStorePermissions ? <p className="py-5 text-center text-sm text-gray-500">Chargement des permissions…</p> : STORE_PERMISSION_OPTIONS.map((permission) => (
+                <label key={permission.name} className="flex cursor-pointer items-start gap-3 rounded-xl border border-gray-200 p-3 dark:border-slate-700">
+                  <input
+                    type="checkbox"
+                    checked={storePermissions.includes(permission.name)}
+                    onChange={(event) => setStorePermissions((current) => event.target.checked
+                      ? [...current, permission.name]
+                      : current.filter((name) => name !== permission.name))}
+                    className="mt-1 h-4 w-4 accent-cyan-700"
+                  />
+                  <span><span className="block text-sm font-semibold text-gray-800 dark:text-gray-200">{permission.label}</span><span className="mt-0.5 block text-xs text-gray-400">{permission.name}</span></span>
+                </label>
+              ))}
+            </div>
+            <div className="flex gap-3 px-6 pb-6">
+              <button type="button" onClick={() => setModal(null)} className="flex-1 rounded-xl border border-gray-200 py-3 text-sm font-semibold text-gray-600 dark:border-slate-700 dark:text-gray-300">Annuler</button>
+              <button type="button" onClick={() => void saveStorePermissions()} disabled={submitting || loadingStorePermissions} className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-cyan-800 py-3 text-sm font-bold text-white disabled:opacity-50">
+                {submitting && <RefreshCw className="h-4 w-4 animate-spin" />}Enregistrer les accès
               </button>
             </div>
           </div>

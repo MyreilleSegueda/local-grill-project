@@ -15,6 +15,10 @@ export async function GET(req: NextRequest) {
           include: { actor: { select: { id: true, fullName: true } }, stock_movement: true },
           orderBy: { created_at: "desc" },
         },
+        return_requests: {
+          orderBy: { requested_at: "desc" },
+          select: { id: true, quantity: true, received_quantity: true, status: true, requested_at: true },
+        },
       },
       orderBy: { dispatch: { created_at: "desc" } },
     });

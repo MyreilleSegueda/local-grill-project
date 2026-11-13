@@ -20,6 +20,7 @@ export const ALL_PERMISSIONS = [
   'SETTINGS_VIEW',   'SETTINGS_CREATE',   'SETTINGS_EDIT',   'SETTINGS_DELETE',
   'SORTIE_STOCK_VIEW', 'SORTIE_STOCK_CREATE', 'SORTIE_STOCK_EDIT', 'SORTIE_STOCK_DELETE',
   'CUISINE_VIEW', 'CUISINE_SERVE', 'CUISINE_RETURN',
+  'STORE_VIEW', 'STORE_TRANSFER', 'STORE_RECEIVE', 'STORE_RETURN_STOCK',
 ] as const;
 
 export type Permission = typeof ALL_PERMISSIONS[number];
@@ -92,6 +93,18 @@ export const PERMISSION_GROUPS: PermissionGroup[] = [
       { key: 'CUISINE_VIEW',   action: 'Voir', short: 'VIEW' },
       { key: 'CUISINE_SERVE',  action: 'Déclarer le service', short: 'SERVE' },
       { key: 'CUISINE_RETURN', action: 'Enregistrer un retour', short: 'RETURN' },
+    ],
+  },
+  {
+    module: 'STORE',
+    label:  'Magasin',
+    icon:   '🏬',
+    color:  'bg-cyan-50 text-cyan-700 border-cyan-200 dark:bg-cyan-950/30 dark:text-cyan-300 dark:border-cyan-900/50',
+    permissions: [
+      { key: 'STORE_VIEW',   action: 'Voir le stock et les retours', short: 'VIEW' },
+      { key: 'STORE_TRANSFER', action: 'Transférer vers la Cuisine', short: 'TRANSFER' },
+      { key: 'STORE_RECEIVE', action: 'Réceptionner les retours Cuisine', short: 'RECEIVE' },
+      { key: 'STORE_RETURN_STOCK', action: 'Transférer vers le stock général', short: 'RETURN' },
     ],
   },
   {
@@ -186,6 +199,7 @@ export const SIDEBAR_PERMISSIONS: Record<string, Permission | null> = {
   '/produits':   'PRODUCTS_VIEW',
   '/entrees':    'STOCK_CREATE',
   '/sorties':    'STOCK_CREATE',
+  '/magasin':    'STORE_VIEW',
   '/materiels':  'MATERIALS_VIEW',
   '/inventaire': 'INVENTORY_VIEW',
   '/alertes':    'ALERTS_VIEW',

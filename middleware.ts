@@ -14,6 +14,7 @@ const PUBLIC_PATHS = [
 type RbacRule =
   | { type: "role";       value: string }
   | { type: "permission"; value: string }
+  | { type: "any-permission"; values: string[] }
   | { type: "any" };
 
 // Aligné sur SIDEBAR_PERMISSIONS dans lib/constants/permissions.ts
@@ -23,6 +24,7 @@ const RBAC_RULES: { prefix: string; rule: RbacRule }[] = [
   { prefix: "/entrees",    rule: { type: "permission", value: "STOCK_VIEW"   } },
   { prefix: "/sorties",    rule: { type: "permission", value: "STOCK_VIEW"   } },
   { prefix: "/cuisine",    rule: { type: "permission", value: "CUISINE_VIEW" } },
+  { prefix: "/magasin",    rule: { type: "any-permission", values: ["STORE_VIEW", "STORE_TRANSFER", "STORE_RECEIVE", "STORE_RETURN_STOCK"] } },
   { prefix: "/materiels",  rule: { type: "permission", value: "STOCK_VIEW"   } },
   { prefix: "/inventaire", rule: { type: "permission", value: "INVENTORY_VIEW" } },
   { prefix: "/alertes",    rule: { type: "permission", value: "ALERTS_VIEW"    } },
@@ -74,7 +76,8 @@ export async function middleware(req: NextRequest) {
     const allowed =
       rule.type === "any"        ? true :
       rule.type === "role"       ? hasRole(payload, rule.value) :
-      rule.type === "permission" ? hasPermission(payload, rule.value) : false;
+      rule.type === "permission" ? hasPermission(payload, rule.value) :
+      rule.type === "any-permission" ? rule.values.some((permission) => hasPermission(payload, permission)) : false;
 
     if (!allowed) {
       const url = new URL("/unauthorized", req.url);

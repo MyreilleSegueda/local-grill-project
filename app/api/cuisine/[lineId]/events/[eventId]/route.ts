@@ -4,22 +4,9 @@ import { Decimal } from "@prisma/client/runtime/library";
 import { prisma } from "@/lib/prisma";
 import { authorizeKitchen } from "@/lib/services/kitchenAuth";
 import { kitchenOperationFits } from "@/lib/services/kitchenRules";
+import { changeLocationBalance } from "@/lib/services/stockLocationService";
 
 type Context = { params: Promise<{ lineId: string; eventId: string }> };
-
-async function refreshSnapshot(tx: Prisma.TransactionClient, productId: number) {
-  const batches = await tx.stock_batches.findMany({
-    where: { product_id: productId },
-    select: { quantity_remaining: true, purchase_price: true },
-  });
-  const quantity = batches.reduce((sum, batch) => sum.plus(batch.quantity_remaining), new Decimal(0));
-  const value = batches.reduce((sum, batch) => sum.plus(batch.quantity_remaining.mul(batch.purchase_price)), new Decimal(0));
-  await tx.inventory_snapshots.upsert({
-    where: { product_id: productId },
-    create: { product_id: productId, theoretical_quantity: quantity, real_quantity: quantity, difference: new Decimal(0), total_value: value },
-    update: { theoretical_quantity: quantity, real_quantity: quantity, difference: new Decimal(0), total_value: value, last_updated_at: new Date() },
-  });
-}
 
 async function readIds(context: Context) {
   const params = await context.params;
@@ -33,9 +20,7 @@ function respondError(error: unknown, method: "PATCH" | "DELETE") {
   const message = error instanceof Error ? error.message : "";
   if (message === "EVENT_NOT_FOUND") return NextResponse.json({ error: "Opération Cuisine introuvable" }, { status: 404 });
   if (message === "QUANTITY_EXCEEDS_REMAINING") return NextResponse.json({ error: "La quantité dépasse le reliquat disponible" }, { status: 409 });
-  if (message === "INVALID_RETURN_MOVEMENT") return NextResponse.json({ error: "Le mouvement de retour associé est introuvable" }, { status: 409 });
-  if (message === "RETURN_ALREADY_USED") return NextResponse.json({ error: "Ce retour a déjà été utilisé dans le stock ; sa quantité ne peut pas être réduite ou supprimée." }, { status: 409 });
-  if (message === "BATCH_RETURN_LIMIT") return NextResponse.json({ error: "Le retour dépasserait la quantité initiale du lot" }, { status: 409 });
+  if (message === "RETURN_REQUEST_REQUIRED") return NextResponse.json({ error: "Les retours Cuisine sont désormais gérés par demande et réception Magasin" }, { status: 409 });
   console.error(`[${method} /api/cuisine/:lineId/events/:eventId]`, error);
   return NextResponse.json({ error: "Erreur lors de la modification de l'opération Cuisine" }, { status: 500 });
 }
@@ -51,6 +36,7 @@ export async function PATCH(req: NextRequest, context: Context) {
 
   const eventInfo = await prisma.kitchen_events.findUnique({ where: { id: ids.eventId }, select: { type: true } });
   if (!eventInfo) return NextResponse.json({ error: "Opération Cuisine introuvable" }, { status: 404 });
+  if (eventInfo.type === "RETURNED") return NextResponse.json({ error: "Un retour réceptionné ne peut pas être modifié" }, { status: 409 });
   const auth = await authorizeKitchen(req, eventInfo.type === "SERVED" ? "CUISINE_SERVE" : "CUISINE_RETURN");
   if (auth.response) return auth.response;
 
@@ -68,24 +54,19 @@ export async function PATCH(req: NextRequest, context: Context) {
       const amount = new Decimal(requested);
       const previousServed = line.served_quantity.minus(current.type === "SERVED" ? current.quantity : 0);
       const previousReturned = line.returned_quantity.minus(current.type === "RETURNED" ? current.quantity : 0);
-      if (!kitchenOperationFits(line.sent_quantity, previousServed, previousReturned, amount)) throw new Error("QUANTITY_EXCEEDS_REMAINING");
+      const pendingReturns = await tx.kitchen_return_requests.findMany({
+        where: { dispatch_line_id: line.id, status: { in: ["PENDING", "PARTIAL"] } },
+        select: { quantity: true, received_quantity: true },
+      });
+      const reserved = pendingReturns.reduce(
+        (sum, request) => sum.plus(request.quantity.minus(request.received_quantity)),
+        new Decimal(0),
+      );
+      if (!kitchenOperationFits(line.sent_quantity, previousServed, previousReturned.plus(reserved), amount)) throw new Error("QUANTITY_EXCEEDS_REMAINING");
 
-      if (current.type === "RETURNED") {
-        if (!current.stock_movement_id) throw new Error("INVALID_RETURN_MOVEMENT");
-        const movement = await tx.stock_movements.findUnique({ where: { id: current.stock_movement_id } });
-        if (!movement || movement.type !== "IN" || movement.batch_id !== line.batch_id) throw new Error("INVALID_RETURN_MOVEMENT");
-        const batches = await tx.$queryRaw<Array<{ quantity_initial: Decimal; quantity_remaining: Decimal }>>(Prisma.sql`SELECT quantity_initial, quantity_remaining FROM stock_batches WHERE id = ${line.batch_id} FOR UPDATE`);
-        const batch = batches[0];
-        if (!batch) throw new Error("INVALID_RETURN_MOVEMENT");
-        const delta = amount.minus(current.quantity);
-        if (delta.gt(0) && batch.quantity_remaining.plus(delta).gt(batch.quantity_initial)) throw new Error("BATCH_RETURN_LIMIT");
-        if (delta.lt(0) && batch.quantity_remaining.lt(delta.abs())) throw new Error("RETURN_ALREADY_USED");
-        if (!delta.isZero()) {
-          await tx.stock_batches.update({ where: { id: line.batch_id }, data: { quantity_remaining: { increment: delta }, updated_at: new Date() } });
-          await tx.stock_movements.update({ where: { id: movement.id }, data: { quantity: amount } });
-          await refreshSnapshot(tx, line.product_id);
-        }
-      }
+      const delta = amount.minus(current.quantity);
+      if (delta.gt(0)) await changeLocationBalance(tx, line.batch_id, "CUISINE", delta.negated());
+      if (delta.lt(0)) await changeLocationBalance(tx, line.batch_id, "CUISINE", delta.abs());
 
       await tx.kitchen_events.update({ where: { id: current.id }, data: { quantity: amount } });
       await tx.kitchen_dispatch_lines.update({
@@ -105,6 +86,7 @@ export async function DELETE(req: NextRequest, context: Context) {
   if (!ids) return NextResponse.json({ error: "Identifiant invalide" }, { status: 400 });
   const eventInfo = await prisma.kitchen_events.findUnique({ where: { id: ids.eventId }, select: { type: true } });
   if (!eventInfo) return NextResponse.json({ error: "Opération Cuisine introuvable" }, { status: 404 });
+  if (eventInfo.type === "RETURNED") return NextResponse.json({ error: "Un retour réceptionné ne peut pas être supprimé" }, { status: 409 });
   const auth = await authorizeKitchen(req, eventInfo.type === "SERVED" ? "CUISINE_SERVE" : "CUISINE_RETURN");
   if (auth.response) return auth.response;
 
@@ -118,19 +100,8 @@ export async function DELETE(req: NextRequest, context: Context) {
       const event = await tx.kitchen_events.findUnique({ where: { id: ids.eventId } });
       if (!event || event.dispatch_line_id !== line.id) throw new Error("EVENT_NOT_FOUND");
 
-      if (event.type === "RETURNED") {
-        if (!event.stock_movement_id) throw new Error("INVALID_RETURN_MOVEMENT");
-        const movement = await tx.stock_movements.findUnique({ where: { id: event.stock_movement_id } });
-        const batches = await tx.$queryRaw<Array<{ quantity_remaining: Decimal }>>(Prisma.sql`SELECT quantity_remaining FROM stock_batches WHERE id = ${line.batch_id} FOR UPDATE`);
-        if (!movement || movement.type !== "IN" || movement.batch_id !== line.batch_id || !batches[0]) throw new Error("INVALID_RETURN_MOVEMENT");
-        if (batches[0].quantity_remaining.lt(event.quantity)) throw new Error("RETURN_ALREADY_USED");
-        await tx.kitchen_events.delete({ where: { id: event.id } });
-        await tx.stock_movements.delete({ where: { id: movement.id } });
-        await tx.stock_batches.update({ where: { id: line.batch_id }, data: { quantity_remaining: { decrement: event.quantity }, updated_at: new Date() } });
-        await refreshSnapshot(tx, line.product_id);
-      } else {
-        await tx.kitchen_events.delete({ where: { id: event.id } });
-      }
+      await tx.kitchen_events.delete({ where: { id: event.id } });
+      await changeLocationBalance(tx, line.batch_id, "CUISINE", event.quantity);
 
       await tx.kitchen_dispatch_lines.update({
         where: { id: line.id },

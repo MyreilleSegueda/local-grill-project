@@ -25,6 +25,13 @@ export async function authorizePermission(
   return authorize(req, permission, false);
 }
 
+export async function authorizeStore(
+  req: NextRequest,
+  permission: "STORE_VIEW" | "STORE_TRANSFER" | "STORE_RECEIVE" | "STORE_RETURN_STOCK",
+) {
+  return authorize(req, permission, true);
+}
+
 async function authorize(req: NextRequest, permission: string, allowAdmin: boolean) {
   const bearer = req.headers.get("authorization") ?? "";
   const token = bearer.startsWith("Bearer ")

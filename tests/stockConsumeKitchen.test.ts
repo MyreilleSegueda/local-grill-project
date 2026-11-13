@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { POST } from "../app/api/stock/consume/route";
 import { prisma } from "../lib/prisma";
-import { authorizeKitchenDispatch, authorizeStockExit } from "../lib/services/kitchenAuth";
+import { authorizeStockExit } from "../lib/services/kitchenAuth";
+import { changeLocationBalance, recordLocationMovement } from "../lib/services/stockLocationService";
+import { Decimal } from "@prisma/client/runtime/library";
 
 jest.mock("../lib/prisma", () => ({
   prisma: {
@@ -9,23 +11,23 @@ jest.mock("../lib/prisma", () => ({
     $transaction: jest.fn(),
   },
 }));
-jest.mock("../lib/services/kitchenAuth", () => ({
-  authorizeKitchenDispatch: jest.fn(),
-  authorizeStockExit: jest.fn(),
-}));
+jest.mock("../lib/services/kitchenAuth", () => ({ authorizeStockExit: jest.fn() }));
 jest.mock("../lib/services/inventoryService", () => ({ updateInventorySnapshot: jest.fn() }));
 jest.mock("../lib/services/auditLogService", () => ({ auditStock: { createExit: jest.fn() } }));
+jest.mock("../lib/services/stockLocationService", () => ({
+  changeLocationBalance: jest.fn(),
+  recordLocationMovement: jest.fn(),
+}));
 
-const mockCuisineAuth = jest.mocked(authorizeKitchenDispatch);
 const mockStockExitAuth = jest.mocked(authorizeStockExit);
 const mockAggregate = prisma.stock_batches.aggregate as jest.Mock;
 const mockTransaction = prisma.$transaction as jest.Mock;
 
-function request(destination: "CUISINE" | "STORE") {
+function request(destination: "OTHER" | "STORE" | "CUISINE", quantity = 3) {
   return new NextRequest("http://localhost/api/stock/consume", {
     method: "POST",
     headers: { "content-type": "application/json", authorization: "Bearer test" },
-    body: JSON.stringify({ product_id: 4, quantity: 3, type: "OUT", destination, reason: "Test" }),
+    body: JSON.stringify({ product_id: 4, quantity, type: "OUT", destination, reason: "Test" }),
   });
 }
 
@@ -39,6 +41,8 @@ function transactionFixture() {
       create: jest.fn().mockResolvedValue({ id: 77 }),
       findMany: jest.fn().mockResolvedValue([{ id: 77, product_id: 4, batch_id: 5, quantity: 3, type: "OUT" }]),
     },
+    stock_location_balances: { upsert: jest.fn().mockResolvedValue({}) },
+    stock_location_movements: { create: jest.fn().mockResolvedValue({ id: 101 }) },
     kitchen_dispatches: { create: jest.fn().mockResolvedValue({ id: 88 }) },
     kitchen_dispatch_lines: { create: jest.fn().mockResolvedValue({ id: 99 }) },
   };
@@ -47,46 +51,53 @@ function transactionFixture() {
   return tx;
 }
 
-describe("POST stock consume Cuisine authorization", () => {
+describe("POST stock consume and Magasin transfer", () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    mockCuisineAuth.mockResolvedValue({ userId: 1, response: null });
     mockStockExitAuth.mockResolvedValue({ userId: 1, response: null });
   });
 
-  it("allows the Cuisine-specific ADMIN authorization and records the FIFO debit and dispatch atomically", async () => {
+  it("transfers FIFO lots from general stock to Magasin without creating a Cuisine dispatch", async () => {
     const tx = transactionFixture();
-    const response = await POST(request("CUISINE"));
+    const response = await POST(request("STORE"));
 
     expect(response.status).toBe(200);
-    expect(mockCuisineAuth).toHaveBeenCalledTimes(1);
-    expect(mockStockExitAuth).not.toHaveBeenCalled();
+    expect(mockStockExitAuth).toHaveBeenCalledTimes(1);
     expect(tx.stock_batches.updateMany).toHaveBeenCalledTimes(1);
     expect(tx.stock_movements.create).toHaveBeenCalledTimes(1);
-    expect(tx.kitchen_dispatches.create).toHaveBeenCalledTimes(1);
-    expect(tx.kitchen_dispatch_lines.create).toHaveBeenCalledWith(expect.objectContaining({
-      data: expect.objectContaining({ origin_movement_id: 77, product_id: 4, batch_id: 5, sent_quantity: 3 }),
+    expect(changeLocationBalance).toHaveBeenCalledWith(tx, 5, "STORE", expect.anything());
+    expect(recordLocationMovement).toHaveBeenCalledWith(tx, expect.objectContaining({
+      from_location: "GENERAL", to_location: "STORE", product_id: 4, batch_id: 5, quantity: expect.anything(),
+    }));
+    expect(tx.kitchen_dispatches.create).not.toHaveBeenCalled();
+  });
+
+  it("enters an exact 2 kg quantity into Magasin from general stock", async () => {
+    const tx = transactionFixture();
+    const response = await POST(request("STORE", 2));
+
+    expect(response.status).toBe(200);
+    expect(changeLocationBalance).toHaveBeenCalledWith(tx, 5, "STORE", new Decimal(2));
+    expect(recordLocationMovement).toHaveBeenCalledWith(tx, expect.objectContaining({
+      from_location: "GENERAL",
+      to_location: "STORE",
+      quantity: new Decimal(2),
     }));
   });
 
-  it("refuses a Cuisine dispatch when the server authorization denies the user", async () => {
-    const denied = NextResponse.json({ error: "Permission requise" }, { status: 403 });
-    mockCuisineAuth.mockResolvedValue({ userId: null, response: denied });
-
+  it("rejects direct general-stock transfers to Cuisine", async () => {
     const response = await POST(request("CUISINE"));
-    expect(response.status).toBe(403);
-    expect(mockStockExitAuth).not.toHaveBeenCalled();
+    expect(response.status).toBe(400);
     expect(mockTransaction).not.toHaveBeenCalled();
   });
 
-  it("keeps STORE exits on the generic SORTIE_STOCK_CREATE permission", async () => {
+  it("keeps permanent exits on the generic SORTIE_STOCK_CREATE permission", async () => {
     const denied = NextResponse.json({ error: "Permission requise" }, { status: 403 });
     mockStockExitAuth.mockResolvedValue({ userId: null, response: denied });
 
-    const response = await POST(request("STORE"));
+    const response = await POST(request("OTHER"));
     expect(response.status).toBe(403);
     expect(mockStockExitAuth).toHaveBeenCalledWith(expect.any(NextRequest));
-    expect(mockCuisineAuth).not.toHaveBeenCalled();
     expect(mockTransaction).not.toHaveBeenCalled();
   });
 });

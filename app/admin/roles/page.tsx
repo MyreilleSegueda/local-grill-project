@@ -410,8 +410,9 @@ export default function AdminRoles() {
   const [pageSize,    setPageSize]    = useState(10);
   const [page,        setPage]        = useState(0);
 
-  const showToast = (message: string, type: ToastType = "success") =>
+  const showToast = useCallback((message: string, type: ToastType = "success") => {
     setToast({ message, type });
+  }, []);
 
   // ── Charger les permissions disponibles en DB ─────────────────────────────
   const fetchPermissions = useCallback(async () => {
@@ -420,11 +421,18 @@ export default function AdminRoles() {
       const res  = await fetch("/api/admin/permissions", {
         headers: { Authorization: `Bearer ${token}` },
       });
-      if (!res.ok) return;
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.error || "Impossible de charger les permissions");
+      }
       const data = await res.json();
-      setAllPermissions(Array.isArray(data) ? data : []);
-    } catch {}
-  }, [token]);
+      if (!Array.isArray(data)) throw new Error("Réponse de permissions invalide");
+      setAllPermissions(data);
+    } catch (error) {
+      console.error("[AdminRoles] Chargement des permissions impossible", error);
+      showToast(error instanceof Error ? error.message : "Impossible de charger les permissions", "error");
+    }
+  }, [showToast, token]);
 
   // ── Charger les rôles ─────────────────────────────────────────────────────
   const fetchRoles = useCallback(async () => {
@@ -442,7 +450,7 @@ export default function AdminRoles() {
     } finally {
       setTableLoading(false);
     }
-  }, [token]);
+  }, [showToast, token]);
 
   useEffect(() => {
     fetchPermissions();

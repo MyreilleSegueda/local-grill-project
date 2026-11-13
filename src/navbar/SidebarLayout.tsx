@@ -18,7 +18,7 @@ import {
   DocumentChartBarIcon, UserCircleIcon, ShieldCheckIcon,
 } from "@heroicons/react/24/outline";
 
-import { ChefHat, Utensils } from "lucide-react";
+import { ChefHat, Utensils, Warehouse } from "lucide-react";
 
 interface SidebarLayoutProps { children: React.ReactNode }
 
@@ -37,7 +37,7 @@ interface MenuItem {
   name:       string;
   href:       string;
   icon:       React.ElementType;
-  permission: string | null;
+  permission: string | string[] | null;
 }
 
 // Permissions alignées sur les constantes
@@ -47,6 +47,7 @@ const MENU_ITEMS: MenuItem[] = [
   { name: "Entrées",         href: "/entrees",    icon: ArrowDownTrayIcon,        permission: "STOCK_VIEW"       },
   { name: "Sorties",         href: "/sorties",    icon: ArrowUpTrayIcon,          permission: "SORTIE_STOCK_VIEW"       },
   { name: "Cuisine",         href: "/cuisine",    icon: ChefHat,                  permission: "CUISINE_VIEW"       },
+  { name: "Magasin",         href: "/magasin",    icon: Warehouse,                permission: ["STORE_VIEW", "STORE_TRANSFER", "STORE_RECEIVE", "STORE_RETURN_STOCK"] },
   { name: "Gestion du matériel", href: "/materiels", icon: Utensils,              permission: "MATERIALS_VIEW"   },
   { name: "Inventaire",      href: "/inventaire", icon: ClipboardDocumentListIcon, permission: "INVENTORY_VIEW"   },
   { name: "Alertes",         href: "/alertes",    icon: ExclamationTriangleIcon,   permission: "ALERTS_VIEW"      },
@@ -88,11 +89,13 @@ function ErrorToast({ message, onClose }: { message: string; onClose: () => void
 function checkPermission(
   userPermissions: string[],
   userRoles: string[],
-  required: string | null,
+  required: string | string[] | null,
 ): boolean {
   if (required === null) return true;
   if (userRoles.includes("ADMIN")) return true;
-  return userPermissions.includes(required);
+  return Array.isArray(required)
+    ? required.some((permission) => userPermissions.includes(permission))
+    : userPermissions.includes(required);
 }
 
 export default function SidebarLayout({ children }: SidebarLayoutProps) {

@@ -32,6 +32,7 @@ type KitchenLine = {
   sent_quantity: string;
   served_quantity: string;
   returned_quantity: string;
+  return_requests: { id: number; quantity: string; received_quantity: string; status: "PENDING" | "PARTIAL" | "RECEIVED" | "REJECTED"; requested_at: string }[];
   product: { name: string; unit: { name: string; abbreviation: string } };
   dispatch: { reference: string; created_at: string; creator: { fullName: string } };
   events: KitchenEvent[];
@@ -98,7 +99,9 @@ export default function CuisinePage() {
             sent: sum.sent + sent,
             consumed: sum.consumed + consumed,
             returned: sum.returned + returned,
-            remaining: sum.remaining + Math.max(0, sent - consumed - returned),
+            remaining: sum.remaining + Math.max(0, sent - consumed - returned - line.return_requests
+              .filter((request) => request.status === "PENDING" || request.status === "PARTIAL")
+              .reduce((total, request) => total + Math.max(0, number(request.quantity) - number(request.received_quantity)), 0)),
           };
         },
         { sent: 0, consumed: 0, returned: 0, remaining: 0 },
@@ -116,13 +119,20 @@ export default function CuisinePage() {
     setBusy(line.id);
     setError("");
     try {
-      const response = await fetch(eventId ? `/api/cuisine/${line.id}/events/${eventId}` : `/api/cuisine/${line.id}/events`, {
+      const requestReturn = type === "RETURNED" && !eventId;
+      const response = await fetch(eventId
+        ? `/api/cuisine/${line.id}/events/${eventId}`
+        : requestReturn ? `/api/cuisine/${line.id}/returns` : `/api/cuisine/${line.id}/events`, {
         method: eventId ? "PATCH" : "POST",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify(eventId ? { quantity: amount } : { type, quantity: amount, operation_key: crypto.randomUUID() }),
+        body: JSON.stringify(eventId
+          ? { quantity: amount }
+          : requestReturn
+            ? { quantity: amount, operation_key: crypto.randomUUID() }
+            : { type, quantity: amount, operation_key: crypto.randomUUID() }),
       });
       const json = await response.json();
       if (!response.ok) throw new Error(json.error ?? "Erreur d'enregistrement");
@@ -190,13 +200,16 @@ export default function CuisinePage() {
   }[] = [
     { key: "SENT", label: "Envoyé en cuisine", value: new Set(lines.filter(line => number(line.sent_quantity) > 0).map(line => line.product.name)).size, icon: Package, color: "text-blue-700", bg: "bg-blue-50" },
     { key: "CONSUMPTION", label: "Consommation", value: new Set(lines.filter(line => number(line.served_quantity) > 0).map(line => line.product.name)).size, icon: Utensils, color: "text-emerald-700", bg: "bg-emerald-50" },
-    { key: "RETURNED", label: "Retourné au stock", value: new Set(lines.filter(line => number(line.returned_quantity) > 0).map(line => line.product.name)).size, icon: RotateCcw, color: "text-amber-700", bg: "bg-amber-50" },
+    { key: "RETURNED", label: "Retourné au Magasin", value: new Set(lines.filter(line => number(line.returned_quantity) > 0).map(line => line.product.name)).size, icon: RotateCcw, color: "text-amber-700", bg: "bg-amber-50" },
     { key: "PENDING", label: "À traiter", value: new Set(lines.filter(line => number(line.sent_quantity) - number(line.served_quantity) - number(line.returned_quantity) > 0).map(line => line.product.name)).size, icon: Clock3, color: "text-violet-700", bg: "bg-violet-50" },
   ];
 
   const selectedLine = selectedAction ? lines.find((line) => line.id === Number(actionLineId)) : undefined;
   const actionRemaining = selectedLine
-    ? Math.max(0, number(selectedLine.sent_quantity) - number(selectedLine.served_quantity) - number(selectedLine.returned_quantity) + (selectedAction?.eventId ? (() => {
+    ? Math.max(0, number(selectedLine.sent_quantity) - number(selectedLine.served_quantity) - number(selectedLine.returned_quantity)
+      - selectedLine.return_requests.filter((request) => request.status === "PENDING" || request.status === "PARTIAL")
+        .reduce((total, request) => total + Math.max(0, number(request.quantity) - number(request.received_quantity)), 0)
+      + (selectedAction?.eventId ? (() => {
       const event = selectedLine.events.find((item) => item.id === selectedAction.eventId);
       return event ? number(event.quantity) : 0;
     })() : 0))
@@ -216,12 +229,12 @@ export default function CuisinePage() {
                 <div>
                   <p className="text-xs font-semibold uppercase tracking-[.22em] text-orange-50">Local Grill · Gestion de stock</p>
                   <h1 className="mt-1 text-3xl font-bold tracking-tight">Suivi Cuisine</h1>
-                  <p className="mt-1 text-sm text-orange-50">Suivez les quantités envoyées, consommées et retournées au stock.</p>
+                  <p className="mt-1 text-sm text-orange-50">Suivez les quantités envoyées, consommées et retournées au Magasin.</p>
                 </div>
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 {canConsume && <button onClick={() => { setActionQuantity(""); setActionLineId(""); setSelectedAction({ type: "SERVED" }); }} disabled={loading || totals.remaining <= 0} className="inline-flex items-center gap-2 rounded-xl bg-emerald-700 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-800 disabled:opacity-50"><Utensils className="h-4 w-4" />Consommation</button>}
-                {canReturn && <button onClick={() => { setActionQuantity(""); setActionLineId(""); setSelectedAction({ type: "RETURNED" }); }} disabled={loading || totals.remaining <= 0} className="inline-flex items-center gap-2 rounded-xl bg-amber-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-amber-700 disabled:opacity-50"><ArrowDownToLine className="h-4 w-4" />Retour de stock</button>}
+                {canReturn && <button onClick={() => { setActionQuantity(""); setActionLineId(""); setSelectedAction({ type: "RETURNED" }); }} disabled={loading || totals.remaining <= 0} className="inline-flex items-center gap-2 rounded-xl bg-amber-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-amber-700 disabled:opacity-50"><ArrowDownToLine className="h-4 w-4" />Retour Magasin</button>}
                 <button onClick={() => void load()} disabled={loading} className="inline-flex items-center gap-2 rounded-xl border border-slate-900 bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:opacity-60">
                   <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />Actualiser
                 </button>
@@ -260,7 +273,7 @@ export default function CuisinePage() {
           <section className="overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-sm">
             <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4 sm:px-6">
               <div>
-                <h2 className="font-semibold text-slate-900">{historyModal === "SENT" ? "Historique d’approvisionnement" : historyModal === "CONSUMPTION" ? "Historique des consommations" : historyModal === "RETURNED" ? "Historique des retours au stock" : "Produits restant à traiter"}</h2>
+                <h2 className="font-semibold text-slate-900">{historyModal === "SENT" ? "Historique d’approvisionnement" : historyModal === "CONSUMPTION" ? "Historique des consommations" : historyModal === "RETURNED" ? "Historique des retours au Magasin" : "Produits restant à traiter"}</h2>
                 {historyModal !== "SENT" && <p className="mt-0.5 text-xs text-slate-500">Détails des produits concernés par cet indicateur.</p>}
               </div>
               <span className="rounded-full bg-orange-50 px-3 py-1 text-xs font-semibold text-orange-700">
@@ -268,7 +281,7 @@ export default function CuisinePage() {
               </span>
             </div>
 
-            {historyModal !== "SENT" && <HistoryPanel filter={historyModal} lines={lines} canConsume={canConsume} canReturn={canReturn} onView={(line, event) => setViewTarget({ line, event })} onEdit={(line, event) => { setActionLineId(String(line.id)); setActionQuantity(String(number(event.quantity))); setSelectedAction({ type: event.type, eventId: event.id }); }} onDelete={(line, event) => setDeleteTarget({ line, event })} />}
+            {historyModal !== "SENT" && <HistoryPanel filter={historyModal} lines={lines} canConsume={canConsume} onView={(line, event) => setViewTarget({ line, event })} onEdit={(line, event) => { setActionLineId(String(line.id)); setActionQuantity(String(number(event.quantity))); setSelectedAction({ type: event.type, eventId: event.id }); }} onDelete={(line, event) => setDeleteTarget({ line, event })} />}
 
             {historyModal === "SENT" && <>
 
@@ -287,6 +300,9 @@ export default function CuisinePage() {
                   const consumed = number(line.served_quantity);
                   const returned = number(line.returned_quantity);
                   const remaining = Math.max(0, sent - consumed - returned);
+                  const pendingReturn = line.return_requests
+                    .filter((request) => request.status === "PENDING" || request.status === "PARTIAL")
+                    .reduce((sum, request) => sum + Math.max(0, number(request.quantity) - number(request.received_quantity)), 0);
                   const unit = line.product.unit.abbreviation || line.product.unit.name;
                   const done = remaining <= 0;
                   const status = done
@@ -333,12 +349,12 @@ export default function CuisinePage() {
                               </summary>
                               <ul className="mt-2 space-y-1.5 border-l-2 border-slate-100 pl-3 text-xs text-slate-500">
                                 {line.events.map((event) => {
-                                  const mayManage = event.type === "SERVED" ? canConsume : canReturn;
+                                  const mayManage = event.type === "SERVED" && canConsume;
                                   return (
                                     <li key={event.id} className="flex flex-wrap items-center justify-between gap-2 py-1">
                                       <span>
                                         <span className={event.type === "SERVED" ? "font-semibold text-emerald-700" : "font-semibold text-amber-700"}>
-                                          {event.type === "SERVED" ? "Consommation" : "Retour de stock"}
+                                          {event.type === "SERVED" ? "Consommation" : "Retour Magasin réceptionné"}
                                         </span>
                                         {" · "}{quantity(number(event.quantity))} {unit}{" · "}{event.actor.fullName}{" · "}{new Date(event.created_at).toLocaleString("fr-FR")}
                                       </span>
@@ -357,7 +373,8 @@ export default function CuisinePage() {
                           )}
                         </div>
 
-                        {remaining > 0 && <p className="mt-4 text-xs text-slate-500">{quantity(remaining)} {unit} encore disponibles pour consommation ou retour de stock.</p>}
+                        {pendingReturn > 0 && <p className="mt-4 text-xs font-medium text-amber-700">{quantity(pendingReturn)} {unit} en attente de réception et validation par le Magasin.</p>}
+                        {remaining > 0 && <p className="mt-2 text-xs text-slate-500">{quantity(Math.max(0, remaining - pendingReturn))} {unit} disponibles pour consommation ou demande de retour Magasin.</p>}
                       </div>
                     </article>
                   );
@@ -376,7 +393,7 @@ export default function CuisinePage() {
           <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/50 p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) setSelectedAction(null); }}>
             <section role="dialog" aria-modal="true" aria-labelledby="kitchen-action-title" className="w-full max-w-lg overflow-hidden rounded-2xl bg-white shadow-2xl">
               <header className={`flex items-center justify-between border-b px-5 py-4 ${isReturn ? "border-amber-100 bg-amber-50/70" : "border-emerald-100 bg-emerald-50/70"}`}>
-                <div><p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Suivi Cuisine</p><h2 id="kitchen-action-title" className="mt-1 text-lg font-bold text-slate-900">{selectedAction.eventId ? "Modifier l’opération" : isReturn ? "Retour de stock" : "Consommation"}</h2></div>
+                <div><p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Suivi Cuisine</p><h2 id="kitchen-action-title" className="mt-1 text-lg font-bold text-slate-900">{selectedAction.eventId ? "Modifier l’opération" : isReturn ? "Demande de retour Magasin" : "Consommation"}</h2></div>
                 <button type="button" onClick={() => setSelectedAction(null)} aria-label="Fermer" className="rounded-lg p-2 text-slate-500 hover:bg-white"><X className="h-5 w-5" /></button>
               </header>
               {error && <p role="alert" className="mx-5 mt-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
@@ -386,7 +403,10 @@ export default function CuisinePage() {
                   <select id="kitchen-product-line" disabled={Boolean(selectedAction.eventId)} value={actionLineId} onChange={(event) => { setActionLineId(event.target.value); setActionQuantity(""); }} className="w-full rounded-xl border border-slate-300 bg-white px-3 py-3 text-sm outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-100 disabled:bg-slate-100">
                     <option value="">Choisir un produit / envoi…</option>
                     {lines.filter((line) => {
-                      const remaining = number(line.sent_quantity) - number(line.served_quantity) - number(line.returned_quantity);
+                      const reserved = line.return_requests
+                        .filter((request) => request.status === "PENDING" || request.status === "PARTIAL")
+                        .reduce((sum, request) => sum + Math.max(0, number(request.quantity) - number(request.received_quantity)), 0);
+                      const remaining = number(line.sent_quantity) - number(line.served_quantity) - number(line.returned_quantity) - reserved;
                       return remaining > 0 || line.id === Number(actionLineId);
                     }).map((line) => <option key={line.id} value={line.id}>{line.product.name}</option>)}
                   </select>
@@ -401,15 +421,15 @@ export default function CuisinePage() {
                   </div>
                 </div>)}
                 <div>
-                  <label htmlFor="kitchen-action-quantity" className="mb-2 block text-sm font-semibold text-slate-700">Quantité {isReturn ? "à retourner au stock" : "consommée"}</label>
+                  <label htmlFor="kitchen-action-quantity" className="mb-2 block text-sm font-semibold text-slate-700">Quantité {isReturn ? "à demander au retour Magasin" : "consommée"}</label>
                   <div className="relative"><input id="kitchen-action-quantity" type="number" min="0.000001" step="0.01" max={actionRemaining} value={actionQuantity} onChange={(event) => setActionQuantity(event.target.value)} className="w-full rounded-xl border border-slate-300 px-4 py-3 pr-16 text-lg outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-100" placeholder="Saisir une quantité"/><span className="absolute right-4 top-1/2 -translate-y-1/2 text-sm text-slate-400">{unit}</span></div>
-                  <p className="mt-1.5 text-xs text-slate-500">Maximum disponible : {quantity(actionRemaining)} {unit}</p>
+                  <p className="mt-1.5 text-xs text-slate-500">{isReturn ? "Une demande sera créée. Le stock Magasin ne sera crédité qu'après réception et validation." : "Maximum disponible :"} {isReturn ? "" : `${quantity(actionRemaining)} ${unit}`}</p>
                 </div>
               </div>
               <footer className="flex justify-end gap-2 border-t border-slate-100 bg-slate-50 px-5 py-4">
                 <button type="button" onClick={() => setSelectedAction(null)} className="rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-600 hover:bg-slate-100">Annuler</button>
                 <button type="button" disabled={!selectedLine || busy === selectedLine.id || !actionQuantity} onClick={() => selectedLine && void record(selectedLine, type, selectedAction.eventId)} className={`inline-flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-50 ${isReturn ? "bg-amber-600 hover:bg-amber-700" : "bg-emerald-600 hover:bg-emerald-700"}`}>
-                  {selectedLine && busy === selectedLine.id && <LoaderCircle className="h-4 w-4 animate-spin" />}{selectedAction.eventId ? "Enregistrer les modifications" : isReturn ? "Confirmer le retour" : "Confirmer la consommation"}
+                  {selectedLine && busy === selectedLine.id && <LoaderCircle className="h-4 w-4 animate-spin" />}{selectedAction.eventId ? "Enregistrer les modifications" : isReturn ? "Envoyer la demande" : "Confirmer la consommation"}
                 </button>
               </footer>
             </section>
@@ -417,7 +437,7 @@ export default function CuisinePage() {
         );
       })()}
       {viewTarget && <EventViewModal line={viewTarget.line} event={viewTarget.event} onClose={() => setViewTarget(null)} />}
-      {deleteTarget && <div className="fixed inset-0 z-[110] flex items-center justify-center bg-slate-950/50 p-4"><section role="alertdialog" aria-modal="true" aria-labelledby="delete-event-title" className="w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl"><div className="flex items-start gap-3"><span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-red-50 text-red-600"><Trash2 className="h-5 w-5" /></span><div><h2 id="delete-event-title" className="font-bold text-slate-900">Supprimer cette opération ?</h2><p className="mt-1 text-sm text-slate-500">Cette suppression recalculera les quantités Cuisine. Pour un retour, le stock sera également ajusté si la quantité retournée est toujours disponible.</p></div></div>{error && <p role="alert" className="mt-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}<div className="mt-5 flex justify-end gap-2"><button onClick={() => { setDeleteTarget(null); setError(""); }} className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-600">Annuler</button><button disabled={busy === deleteTarget.line.id} onClick={() => void removeEvent(deleteTarget.line, deleteTarget.event)} className="inline-flex items-center gap-2 rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">{busy === deleteTarget.line.id && <LoaderCircle className="h-4 w-4 animate-spin" />}Supprimer</button></div></section></div>}
+      {deleteTarget && <div className="fixed inset-0 z-[110] flex items-center justify-center bg-slate-950/50 p-4"><section role="alertdialog" aria-modal="true" aria-labelledby="delete-event-title" className="w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl"><div className="flex items-start gap-3"><span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-red-50 text-red-600"><Trash2 className="h-5 w-5" /></span><div><h2 id="delete-event-title" className="font-bold text-slate-900">Supprimer cette opération ?</h2><p className="mt-1 text-sm text-slate-500">Cette suppression annulera la consommation et rétablira la quantité correspondante dans le stock Cuisine.</p></div></div>{error && <p role="alert" className="mt-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}<div className="mt-5 flex justify-end gap-2"><button onClick={() => { setDeleteTarget(null); setError(""); }} className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-600">Annuler</button><button disabled={busy === deleteTarget.line.id} onClick={() => void removeEvent(deleteTarget.line, deleteTarget.event)} className="inline-flex items-center gap-2 rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">{busy === deleteTarget.line.id && <LoaderCircle className="h-4 w-4 animate-spin" />}Supprimer</button></div></section></div>}
     </SidebarLayout>
   );
 }
@@ -435,7 +455,7 @@ function EventViewModal({ line, event, onClose }: { line: KitchenLine; event: Ki
   const unit = line.product.unit.abbreviation || line.product.unit.name;
   const isConsumption = event.type === "SERVED";
   const values = [
-    ["Type d’opération", isConsumption ? "Consommation" : "Retour de stock"],
+    ["Type d’opération", isConsumption ? "Consommation" : "Retour Magasin réceptionné"],
     ["Produit", line.product.name],
     ["Quantité", `${quantity(number(event.quantity))} ${unit}`],
     ["Référence d’envoi", line.dispatch.reference],
@@ -445,7 +465,7 @@ function EventViewModal({ line, event, onClose }: { line: KitchenLine; event: Ki
   return (
     <div className="fixed inset-0 z-[105] flex items-center justify-center bg-slate-950/50 p-4" onMouseDown={(click) => { if (click.target === click.currentTarget) onClose(); }}>
       <section role="dialog" aria-modal="true" aria-labelledby="kitchen-event-title" className="w-full max-w-lg overflow-hidden rounded-2xl bg-white shadow-2xl">
-        <header className="flex items-center justify-between border-b border-slate-100 px-5 py-4"><div><p className="text-xs font-semibold uppercase tracking-wider text-orange-600">Détail de l’opération</p><h2 id="kitchen-event-title" className="mt-1 text-lg font-bold text-slate-900">{isConsumption ? "Consommation" : "Retour de stock"}</h2></div><button onClick={onClose} aria-label="Fermer" className="rounded-lg p-2 text-slate-500 hover:bg-slate-100"><X className="h-5 w-5" /></button></header>
+        <header className="flex items-center justify-between border-b border-slate-100 px-5 py-4"><div><p className="text-xs font-semibold uppercase tracking-wider text-orange-600">Détail de l’opération</p><h2 id="kitchen-event-title" className="mt-1 text-lg font-bold text-slate-900">{isConsumption ? "Consommation" : "Retour Magasin réceptionné"}</h2></div><button onClick={onClose} aria-label="Fermer" className="rounded-lg p-2 text-slate-500 hover:bg-slate-100"><X className="h-5 w-5" /></button></header>
         <dl className="divide-y divide-slate-100 px-5">{values.map(([label, value]) => <div key={label} className="flex items-start justify-between gap-4 py-3"><dt className="text-sm text-slate-500">{label}</dt><dd className="text-right text-sm font-semibold text-slate-900">{value}</dd></div>)}</dl>
         <footer className="flex justify-end border-t border-slate-100 bg-slate-50 px-5 py-3"><button onClick={onClose} className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700">Fermer</button></footer>
       </section>
@@ -453,11 +473,10 @@ function EventViewModal({ line, event, onClose }: { line: KitchenLine; event: Ki
   );
 }
 
-function HistoryPanel({ filter, lines, canConsume, canReturn, onView, onEdit, onDelete }: {
+function HistoryPanel({ filter, lines, canConsume, onView, onEdit, onDelete }: {
   filter: HistoryFilter;
   lines: KitchenLine[];
   canConsume: boolean;
-  canReturn: boolean;
   onView: (line: KitchenLine, event: KitchenEvent) => void;
   onEdit: (line: KitchenLine, event: KitchenEvent) => void;
   onDelete: (line: KitchenLine, event: KitchenEvent) => void;
@@ -476,7 +495,7 @@ function HistoryPanel({ filter, lines, canConsume, canReturn, onView, onEdit, on
                 <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500"><tr><th className="px-4 py-3">Date</th><th className="px-4 py-3">Produit</th><th className="px-4 py-3">Quantité</th><th className="px-4 py-3">Référence</th><th className="px-4 py-3">Responsable</th><th className="px-4 py-3 text-right">Actions</th></tr></thead>
                 <tbody className="divide-y divide-slate-100">{events.sort((a, b) => new Date(b.event.created_at).getTime() - new Date(a.event.created_at).getTime()).map(({ line, event }) => {
                   const unit = line.product.unit.abbreviation || line.product.unit.name;
-                  const mayManage = event.type === "SERVED" ? canConsume : canReturn;
+                  const mayManage = event.type === "SERVED" && canConsume;
                   return <tr key={event.id}><td className="whitespace-nowrap px-4 py-3 text-slate-500">{new Date(event.created_at).toLocaleString("fr-FR")}</td><td className="px-4 py-3 font-medium text-slate-900">{line.product.name}</td><td className={`whitespace-nowrap px-4 py-3 font-bold ${event.type === "SERVED" ? "text-emerald-700" : "text-amber-700"}`}>{quantity(number(event.quantity))} {unit}</td><td className="px-4 py-3 text-slate-600">{line.dispatch.reference}</td><td className="px-4 py-3 text-slate-600">{event.actor.fullName}</td><td className="px-4 py-3"><div className="flex justify-end gap-1"><button title="Voir" aria-label="Voir" onClick={() => onView(line, event)} className="rounded-lg p-2 text-slate-500 hover:bg-slate-100 hover:text-slate-900"><Eye className="h-4 w-4" /></button>{mayManage && <><button title="Modifier" aria-label="Modifier" onClick={() => onEdit(line, event)} className="rounded-lg p-2 text-blue-600 hover:bg-blue-50"><Pencil className="h-4 w-4" /></button><button title="Supprimer" aria-label="Supprimer" onClick={() => onDelete(line, event)} className="rounded-lg p-2 text-red-600 hover:bg-red-50"><Trash2 className="h-4 w-4" /></button></>}</div></td></tr>;
                 })}</tbody>
               </table>

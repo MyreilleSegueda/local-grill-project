@@ -16,6 +16,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 
   const search      = p.get("search")      || "";
   const type        = p.get("type")        || undefined;
+  const source      = p.get("source")      || "";
   const startDate   = p.get("startDate")   ? new Date(p.get("startDate")!)  : undefined;
   const endDate     = p.get("endDate")     ? new Date(p.get("endDate")!)    : undefined;
   const product_id  = p.get("product_id")  ? parseInt(p.get("product_id")!)  : undefined;
@@ -25,6 +26,10 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   const order       = p.get("order") === "asc" ? "asc" : "desc";
   const limit       = p.get("limit")  ? parseInt(p.get("limit")!)  : 50;
   const offset      = p.get("offset") ? parseInt(p.get("offset")!) : 0;
+
+  if (source && source !== "STORE_RETURN") {
+    return NextResponse.json({ error: "Source de mouvement invalide" }, { status: 400 });
+  }
 
   // ── WHERE ──────────────────────────────────────────────────────────────────
   const where: Record<string, unknown> = {};
@@ -53,6 +58,25 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   }
 
   try {
+    if (source === "STORE_RETURN") {
+      const storeReturnReferences = await prisma.stock_location_movements.findMany({
+        where: {
+          from_location: "STORE",
+          to_location: "GENERAL",
+          reference_number: { not: null },
+        },
+        distinct: ["reference_number"],
+        select: { reference_number: true },
+      });
+      const references = [...new Set(storeReturnReferences
+        .map((movement) => movement.reference_number)
+        .filter((reference): reference is string => reference !== null))];
+      if (references.length === 0) {
+        return NextResponse.json({ success: true, data: { total: 0, movements: [] } });
+      }
+      where.reference_number = { in: references };
+    }
+
     const [total, movements] = await Promise.all([
       prisma.stock_movements.count({ where }),
       prisma.stock_movements.findMany({

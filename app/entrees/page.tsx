@@ -70,7 +70,7 @@ interface StockEntry {
   purchase_price?: number; entry_date: string;
   expiration_date?: string | null; batch_number?: string;
 }
-interface KitchenReturn {
+interface StoreReturn {
   id: number; quantity: number; reason?: string | null; reference_number?: string | null;
   created_at: string; user?: { id: number; fullName: string } | null;
   product?: { name?: string; unit?: Unit };
@@ -1057,7 +1057,7 @@ export default function EntreesPage(): JSX.Element {
   const [users,      setUsers]      = useState<AppUser[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [entries,    setEntries]    = useState<StockEntry[]>([]);
-  const [kitchenReturns, setKitchenReturns] = useState<KitchenReturn[]>([]);
+  const [storeReturns, setStoreReturns] = useState<StoreReturn[]>([]);
   const [returnsTotal, setReturnsTotal] = useState(0);
   const [returnsPage, setReturnsPage] = useState(1);
   const [returnsError, setReturnsError] = useState("");
@@ -1112,14 +1112,14 @@ export default function EntreesPage(): JSX.Element {
       if (!res.ok) { const d = await res.json().catch(() => null); throw new Error(d?.error ?? "Impossible de charger les entrées."); }
       const d = await res.json() as any; setEntries(d.data?.entries ?? []); setTotal(d.data?.total ?? 0);
       try {
-        const returnParams = new URLSearchParams({ type: "IN", search: "Retour Cuisine", sort: "created_at", order: "desc", limit: String(returnsPageSize), offset: String((returnsPage - 1) * returnsPageSize) });
+        const returnParams = new URLSearchParams({ type: "IN", source: "STORE_RETURN", sort: "created_at", order: "desc", limit: String(returnsPageSize), offset: String((returnsPage - 1) * returnsPageSize) });
         const returnRes = await fetch(`/api/stock/movements?${returnParams}`, { headers: { Authorization: `Bearer ${token}` } });
-        if (!returnRes.ok) { const errorData = await returnRes.json().catch(() => null); throw new Error(errorData?.error ?? "Impossible de charger les retours Cuisine."); }
+        if (!returnRes.ok) { const errorData = await returnRes.json().catch(() => null); throw new Error(errorData?.error ?? "Impossible de charger les retours Magasin."); }
         const returnData = await returnRes.json() as any;
-        setKitchenReturns(returnData.data?.movements ?? []);
+        setStoreReturns(returnData.data?.movements ?? []);
         setReturnsTotal(returnData.data?.total ?? 0);
       } catch (error) {
-        setKitchenReturns([]);
+        setStoreReturns([]);
         setReturnsTotal(0);
         setReturnsError(error instanceof Error ? error.message : "Erreur réseau lors du chargement des retours.");
       }
@@ -1537,17 +1537,17 @@ export default function EntreesPage(): JSX.Element {
           </motion.div>
 
           <div className="mt-8">
-            <SectionLabel icon={RefreshCw} text="Retours Cuisine réintégrés au stock" />
+            <SectionLabel icon={RefreshCw} text="Retours Magasin réintégrés au stock" />
             {returnsError && <div role="alert" className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800"><span>{returnsError}</span><button className="btn-ghost" onClick={fetchEntries}>Réessayer</button></div>}
             <div className="overflow-hidden rounded-2xl" style={{ border: "1.5px solid var(--border)", background: "var(--surface)" }}>
-              {kitchenReturns.length === 0 ? <div className="p-8 text-center text-sm" style={{ color: "var(--text-2)" }}>{returnsError ? "Les retours n’ont pas pu être chargés." : "Aucun retour Cuisine enregistré."}</div> : <div className="overflow-x-auto">
+              {storeReturns.length === 0 ? <div className="p-8 text-center text-sm" style={{ color: "var(--text-2)" }}>{returnsError ? "Les retours n’ont pas pu être chargés." : "Aucun retour Magasin réintégré au stock."}</div> : <div className="overflow-x-auto">
                 <table className="min-w-full text-sm"><thead><tr style={{ borderBottom: "1.5px solid var(--border)", background: "var(--bg)" }}>
                   {["Date du retour", "Produit", "Quantité réintégrée", "Référence", "Enregistré par"].map(label => <th key={label} className="px-5 py-3 text-left text-[11px] font-semibold uppercase tracking-[.12em]" style={{ color: "var(--text-2)" }}>{label}</th>)}
-                </tr></thead><tbody>{kitchenReturns.map(returned => <tr key={returned.id} style={{ borderBottom: "1px solid var(--border)" }}>
+                </tr></thead><tbody>{storeReturns.map(returned => <tr key={returned.id} style={{ borderBottom: "1px solid var(--border)" }}>
                   <td className="whitespace-nowrap px-5 py-3.5" style={{ color: "var(--text-2)" }}>{new Date(returned.created_at).toLocaleString("fr-FR")}</td>
                   <td className="px-5 py-3.5 font-medium" style={{ color: "var(--text)" }}>{returned.product?.name ?? "—"}</td>
                   <td className="px-5 py-3.5 font-semibold text-emerald-700">+{fmtP(returned.quantity)} {returned.product?.unit?.abbreviation ?? returned.product?.unit?.name ?? ""}</td>
-                  <td className="px-5 py-3.5" style={{ color: "var(--text-2)" }}>{returned.reference_number ?? "Retour Cuisine"}</td>
+                  <td className="px-5 py-3.5" style={{ color: "var(--text-2)" }}>{returned.reference_number ?? "Retour Magasin"}</td>
                   <td className="px-5 py-3.5" style={{ color: "var(--text-2)" }}>{returned.user?.fullName ?? "—"}</td>
                 </tr>)}</tbody></table>
               </div>}

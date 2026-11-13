@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { authorizeKitchen, authorizeKitchenDispatch, authorizePermission } from "../lib/services/kitchenAuth";
+import { authorizeKitchen, authorizeKitchenDispatch, authorizePermission, authorizeStore } from "../lib/services/kitchenAuth";
 import { loadUserWithPermissions, verifyJwt } from "../server/services/authService";
 
 jest.mock("../server/services/authService", () => ({
@@ -82,5 +82,24 @@ describe("Cuisine authorization", () => {
 
     await expect(authorizeKitchen(request(), "CUISINE_SERVE")).resolves.toMatchObject({ userId: 12, response: null });
     expect((await authorizeKitchen(request(), "CUISINE_RETURN")).response?.status).toBe(403);
+  });
+
+  it("checks each Magasin operation against its own role permission", async () => {
+    mockLoadUser.mockResolvedValue(user(["MAGASINIER"], ["STORE_TRANSFER", "STORE_VIEW"]));
+
+    await expect(authorizeStore(request(), "STORE_VIEW")).resolves.toMatchObject({ userId: 12, response: null });
+    await expect(authorizeStore(request(), "STORE_TRANSFER")).resolves.toMatchObject({ userId: 12, response: null });
+    expect((await authorizeStore(request(), "STORE_RECEIVE")).response?.status).toBe(403);
+    expect((await authorizeStore(request(), "STORE_RETURN_STOCK")).response?.status).toBe(403);
+  });
+
+  it("allows direct user permissions and rejects requests without an exact operation grant", async () => {
+    mockLoadUser.mockResolvedValue({
+      ...user(["GESTIONNAIRE"]),
+      userpermission: [{ permission: { name: "STORE_RECEIVE" } }],
+    } as unknown as Awaited<ReturnType<typeof loadUserWithPermissions>>);
+
+    await expect(authorizeStore(request(), "STORE_RECEIVE")).resolves.toMatchObject({ userId: 12, response: null });
+    expect((await authorizeStore(request(), "STORE_TRANSFER")).response?.status).toBe(403);
   });
 });

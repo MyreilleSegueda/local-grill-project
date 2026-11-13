@@ -71,7 +71,7 @@ type EditErrors = Partial<Record<keyof EditForm, string>>;
 
 interface CreateForm {
   product_id: string; quantity: string; type: string;
-  reason: string; reference_number: string; destination: "STORE" | "CUISINE";
+  reason: string; reference_number: string; destination: "STORE" | "OTHER";
 }
 type CreateErrors = Partial<Record<keyof CreateForm, string>>;
 type SortOrder = "asc" | "desc";
@@ -377,12 +377,12 @@ function CreateModal({ show, onClose, products, units, token, onSuccess, notify,
   const [physQty,setPhysQty]       = useState(0);
   const [errs,setErrs]             = useState<CreateErrors>({});
   const [fd,setFd]                 = useState<CreateForm>({
-    product_id:"",quantity:"",type:"OUT",reason:"Autre destination",reference_number:genRef(),destination:"STORE",
+    product_id:"",quantity:"",type:"OUT",reason:"Autre destination",reference_number:genRef(),destination:"OTHER",
   });
   const set=(k:keyof CreateForm,v:string)=>{setFd(p=>({...p,[k]:v}));setErrs(p=>({...p,[k]:""}))}
 
   useEffect(()=>{
-    if(!show)setTimeout(()=>{setSelProd(null);setPhysQty(0);setErrs({});setFd({product_id:"",quantity:"",type:"OUT",reason:"Autre destination",reference_number:genRef(),destination:"STORE"});},350);
+    if(!show)setTimeout(()=>{setSelProd(null);setPhysQty(0);setErrs({});setFd({product_id:"",quantity:"",type:"OUT",reason:"Autre destination",reference_number:genRef(),destination:"OTHER"});},350);
   },[show]);
 
   useEffect(()=>{
@@ -460,9 +460,9 @@ function CreateModal({ show, onClose, products, units, token, onSuccess, notify,
         <AnimatePresence>{selProd&&<ProductCard product={selProd} qty={physQty}/>}</AnimatePresence>
 
         {fd.type==="OUT"&&<FieldLabel label="Destination" icon={ArrowRight}>
-          <select className="fi" value={fd.destination} disabled={ro} onChange={e=>{const destination=e.target.value as "STORE"|"CUISINE";setFd(p=>({...p,destination,reason:p.reason==="Consommation cuisine"||p.reason==="Autre destination"?(destination==="CUISINE"?"Consommation cuisine":"Autre destination"):p.reason}));setErrs(p=>({...p,destination:""}));}}>
-            <option value="STORE">Autre destination</option>
-            <option value="CUISINE">Cuisine (suivi du service et des retours)</option>
+          <select className="fi" value={fd.destination} disabled={ro} onChange={e=>{const destination=e.target.value as "STORE"|"OTHER";setFd(p=>({...p,destination,reason:p.reason==="Consommation cuisine"||p.reason==="Transfert vers Magasin"||p.reason==="Autre destination"?(destination==="STORE"?"Transfert vers Magasin":"Autre destination"):p.reason}));setErrs(p=>({...p,destination:""}));}}>
+            <option value="OTHER">Autre destination</option>
+            <option value="STORE">Destination Magasin</option>
           </select>
         </FieldLabel>}
 
@@ -477,7 +477,7 @@ function CreateModal({ show, onClose, products, units, token, onSuccess, notify,
             {physQty>0&&<p className="mt-1 text-[13px]" style={{color:"#0b0c0ec0"}}>Max : <strong style={{color:"var(--text-2)"}}>{physQty}</strong></p>}
           </FieldLabel>
           <FieldLabel label="Type" icon={Zap} required={!ro} error={errs.type}>
-            <select className="fi" value={fd.type} disabled={ro} onChange={e=>set("type",e.target.value)}>
+            <select className="fi" value={fd.type} disabled={ro} onChange={e=>{set("type",e.target.value);if(e.target.value!=="OUT")setFd(p=>({...p,destination:"OTHER"}));}}>
               {MOVEMENT_TYPES.map(t=><option key={t.value} value={t.value}>{t.label}</option>)}
             </select>
           </FieldLabel>
@@ -490,10 +490,10 @@ function CreateModal({ show, onClose, products, units, token, onSuccess, notify,
           </motion.div>
         </AnimatePresence>
 
-        <FieldLabel label={fd.destination==="STORE"?"Autre destination / détails":"Raison / Détails"} icon={FileText} required={!ro} error={errs.reason}>
-          <input className={`fi ${errs.reason?"err":""}`} placeholder={fd.destination==="STORE"?"Précisez la destination (ex. événement, salle…)":"Ex: Consommation cuisine, Casse…"}
+        <FieldLabel label={fd.destination==="OTHER"?"Autre destination / détails":"Raison / Détails"} icon={FileText} required={!ro} error={errs.reason}>
+          <input className={`fi ${errs.reason?"err":""}`} placeholder={fd.destination==="OTHER"?"Précisez la destination (ex. événement, salle…)":"Ex: Transfert vers Magasin"}
             value={fd.reason} disabled={ro} onChange={e=>set("reason",e.target.value)}/>
-          {fd.destination==="STORE"&&<p className="mt-1 text-xs" style={{color:"var(--text-2)"}}>Indiquez où va le produit, puis confirmez la sortie.</p>}
+          {fd.destination==="OTHER"&&<p className="mt-1 text-xs" style={{color:"var(--text-2)"}}>Indiquez où va le produit, puis confirmez la sortie.</p>}
         </FieldLabel>
 
         <FieldLabel label="Numéro de référence" icon={Hash}>

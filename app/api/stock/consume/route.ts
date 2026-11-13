@@ -7,7 +7,10 @@ import { prisma }                           from "@/lib/prisma";
 import { auditStock } from "@/lib/services/auditLogService";
 import { updateInventorySnapshot }          from "@/lib/services/inventoryService";
 import type { StockMovementType }           from "@prisma/client";
-import { authorizeKitchenDispatch, authorizeStockExit } from "@/lib/services/kitchenAuth";
+import { Decimal } from "@prisma/client/runtime/library";
+import { authorizeStockExit } from "@/lib/services/kitchenAuth";
+import { allocateFifo } from "@/lib/services/fifo";
+import { changeLocationBalance, recordLocationMovement } from "@/lib/services/stockLocationService";
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
   try {
@@ -17,18 +20,16 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       type?:             string;
       reason?:           string;
       reference_number?: string;
-      destination?: "STORE" | "CUISINE";
+      destination?: "STORE" | "OTHER" | "CUISINE";
     };
 
-    const auth = body.destination === "CUISINE"
-      ? await authorizeKitchenDispatch(req)
-      : await authorizeStockExit(req);
+    const auth = await authorizeStockExit(req);
     if (auth.response) return auth.response;
     if (!auth.userId) return NextResponse.json({ error: "Non authentifié" }, { status: 401 });
 
     const errors: Record<string, string> = {};
     if (!body.product_id)            errors.product_id = "product_id requis";
-    if (!body.quantity || body.quantity <= 0) errors.quantity = "Quantité > 0 requise";
+    if (!Number.isFinite(body.quantity) || !body.quantity || body.quantity <= 0) errors.quantity = "Quantité > 0 requise";
     if (Object.keys(errors).length > 0)
       return NextResponse.json({ error: "Données invalides", fields: errors }, { status: 400 });
 
@@ -36,12 +37,19 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     if (!["IN", "OUT", "LOSS", "EXPIRED", "ADJUSTMENT"].includes(requestedType)) {
       return NextResponse.json({ error: "Type de mouvement invalide" }, { status: 400 });
     }
-    if (body.destination === "CUISINE" && requestedType !== "OUT") {
-      return NextResponse.json({ error: "La destination Cuisine est réservée aux sorties" }, { status: 400 });
+    if (body.destination === "CUISINE") {
+      return NextResponse.json({ error: "Les produits doivent être transférés du Magasin vers la Cuisine" }, { status: 400 });
     }
+    if (body.destination && !["STORE", "OTHER"].includes(body.destination)) {
+      return NextResponse.json({ error: "Destination invalide" }, { status: 400 });
+    }
+    if (body.destination === "STORE" && requestedType !== "OUT") {
+      return NextResponse.json({ error: "Le transfert vers Magasin nécessite une sortie normale" }, { status: 400 });
+    }
+    const transferToStore = body.destination === "STORE" && requestedType === "OUT";
     const mvtType = requestedType as StockMovementType;
     const pid     = Number(body.product_id);
-    let   toConsume = body.quantity;
+    const requestedQuantity = new Decimal(body.quantity);
 
     // Vérifier stock disponible
     const totalAvailable = await prisma.stock_batches.aggregate({
@@ -49,9 +57,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       _sum:   { quantity_remaining: true },
     });
     const available = Number(totalAvailable._sum.quantity_remaining ?? 0);
-    if (available < toConsume) {
+    if (new Decimal(available).lt(requestedQuantity)) {
       return NextResponse.json(
-        { error: `Stock insuffisant : disponible ${available}, demandé ${toConsume}` },
+        { error: `Stock insuffisant : disponible ${available}, demandé ${requestedQuantity}` },
         { status: 409 },
       );
     }
@@ -62,12 +70,22 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       // FIFO : lots les plus anciens en premier
       const batches = await tx.stock_batches.findMany({
         where:   { product_id: pid, quantity_remaining: { gt: 0 } },
-        orderBy: { entry_date: "asc" },
+        orderBy: [{ entry_date: "asc" }, { id: "asc" }],
       });
 
-      for (const batch of batches) {
-        if (toConsume <= 0) break;
-        const take      = Math.min(toConsume, Number(batch.quantity_remaining));
+      const allocations = allocateFifo(
+        batches.map((batch) => ({
+          batch,
+          id: batch.id,
+          entry_date: batch.entry_date,
+          quantity: batch.quantity_remaining,
+        })),
+        requestedQuantity,
+      );
+
+      for (const allocation of allocations) {
+        const batch = allocation.batch.batch;
+        const take = allocation.quantity;
         const batchUpdate = await tx.stock_batches.updateMany({
           where: { id: batch.id, quantity_remaining: { gte: take } },
           data:  { quantity_remaining: { decrement: take }, updated_at: new Date() },
@@ -80,38 +98,23 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
             batch_id:         batch.id,
             type:             mvtType,
             quantity:         take,
-            reason:           body.reason ?? "Consommation stock",
+            reason:           body.reason ?? (transferToStore ? "Transfert vers Magasin" : "Consommation stock"),
             reference_number: body.reference_number ?? null,
             user_id:          auth.userId,
           },
         });
         movements.push(mvt.id);
-        toConsume -= take;
-      }
-      if (toConsume > 0.000001) throw new Error("Stock insuffisant");
-
-      if (body.destination === "CUISINE") {
-        const dispatch = await tx.kitchen_dispatches.create({
-          data: {
-            reference: `CUISINE-${auth.userId}-${Date.now()}-${crypto.randomUUID()}`,
-            created_by: auth.userId,
-          },
-        });
-        const createdMovements = await tx.stock_movements.findMany({
-          where: { id: { in: movements } },
-          select: { id: true, product_id: true, batch_id: true, quantity: true, type: true },
-        });
-        for (const movement of createdMovements) {
-          if (movement.type !== "OUT" || movement.batch_id === null)
-            throw new Error("Mouvement source Cuisine invalide");
-          await tx.kitchen_dispatch_lines.create({
-            data: {
-              dispatch_id: dispatch.id,
-              origin_movement_id: movement.id,
-              product_id: movement.product_id,
-              batch_id: movement.batch_id,
-              sent_quantity: movement.quantity,
-            },
+        if (transferToStore) {
+          await changeLocationBalance(tx, batch.id, "STORE", take);
+          await recordLocationMovement(tx, {
+            product_id: pid,
+            batch_id: batch.id,
+            from_location: "GENERAL",
+            to_location: "STORE",
+            quantity: take,
+            user_id: auth.userId,
+            reason: body.reason ?? "Transfert du stock général vers Magasin",
+            reference_number: body.reference_number ?? null,
           });
         }
       }
@@ -128,7 +131,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
     return NextResponse.json({
       success: true,
-      data:    { movement_ids: movements, consumed: body.quantity },
+      data:    { movement_ids: movements, transferred_to_store: transferToStore, consumed: body.quantity },
     });
 
   } catch (err) {

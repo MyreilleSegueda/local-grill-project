@@ -4,37 +4,9 @@ import { Decimal } from "@prisma/client/runtime/library";
 import { prisma } from "@/lib/prisma";
 import { authorizeKitchen } from "@/lib/services/kitchenAuth";
 import { isKitchenEventType, kitchenOperationFits } from "@/lib/services/kitchenRules";
+import { changeLocationBalance } from "@/lib/services/stockLocationService";
 
 type Context = { params: Promise<{ lineId: string }> };
-
-async function refreshSnapshot(tx: Prisma.TransactionClient, productId: number) {
-  const batches = await tx.stock_batches.findMany({
-    where: { product_id: productId },
-    select: { quantity_remaining: true, purchase_price: true },
-  });
-  const quantity = batches.reduce((sum, batch) => sum.plus(batch.quantity_remaining), new Decimal(0));
-  const value = batches.reduce(
-    (sum, batch) => sum.plus(batch.quantity_remaining.mul(batch.purchase_price)),
-    new Decimal(0),
-  );
-  await tx.inventory_snapshots.upsert({
-    where: { product_id: productId },
-    create: {
-      product_id: productId,
-      theoretical_quantity: quantity,
-      real_quantity: quantity,
-      difference: new Decimal(0),
-      total_value: value,
-    },
-    update: {
-      theoretical_quantity: quantity,
-      real_quantity: quantity,
-      difference: new Decimal(0),
-      total_value: value,
-      last_updated_at: new Date(),
-    },
-  });
-}
 
 export async function POST(req: NextRequest, context: Context) {
   let body: { type?: string; quantity?: number; operation_key?: string };
@@ -46,6 +18,9 @@ export async function POST(req: NextRequest, context: Context) {
   const eventType = body.type;
   if (!isKitchenEventType(eventType)) {
     return NextResponse.json({ error: "Type d'opération invalide" }, { status: 400 });
+  }
+  if (eventType === "RETURNED") {
+    return NextResponse.json({ error: "Les retours doivent être enregistrés comme demandes vers le Magasin" }, { status: 400 });
   }
   const permission = eventType === "SERVED" ? "CUISINE_SERVE" : "CUISINE_RETURN";
   const auth = await authorizeKitchen(req, permission);
@@ -78,40 +53,18 @@ export async function POST(req: NextRequest, context: Context) {
       const duplicate = await tx.kitchen_events.findUnique({ where: { operation_key: operationKey } });
       if (duplicate) throw new Error("DUPLICATE_OPERATION");
 
-      if (!kitchenOperationFits(line.sent_quantity, line.served_quantity, line.returned_quantity, amount))
+      const pendingReturns = await tx.kitchen_return_requests.findMany({
+        where: { dispatch_line_id: line.id, status: { in: ["PENDING", "PARTIAL"] } },
+        select: { quantity: true, received_quantity: true },
+      });
+      const reserved = pendingReturns.reduce(
+        (sum, request) => sum.plus(request.quantity.minus(request.received_quantity)),
+        new Decimal(0),
+      );
+      if (!kitchenOperationFits(line.sent_quantity, line.served_quantity, line.returned_quantity.plus(reserved), amount))
         throw new Error("QUANTITY_EXCEEDS_REMAINING");
 
-      let stockMovementId: number | null = null;
-      if (eventType === "RETURNED") {
-        const origin = await tx.stock_movements.findUnique({ where: { id: line.origin_movement_id } });
-        if (!origin || origin.type !== "OUT" || origin.product_id !== line.product_id || origin.batch_id !== line.batch_id) {
-          throw new Error("INVALID_ORIGIN_MOVEMENT");
-        }
-        const batches = await tx.$queryRaw<Array<{ id: number; quantity_initial: Decimal; quantity_remaining: Decimal }>>(
-          Prisma.sql`SELECT id, quantity_initial, quantity_remaining FROM stock_batches WHERE id = ${line.batch_id} FOR UPDATE`,
-        );
-        const batch = batches[0];
-        if (!batch || batch.quantity_remaining.plus(amount).gt(batch.quantity_initial)) {
-          throw new Error("BATCH_RETURN_LIMIT");
-        }
-        await tx.stock_batches.update({
-          where: { id: line.batch_id },
-          data: { quantity_remaining: { increment: amount }, updated_at: new Date() },
-        });
-        const movement = await tx.stock_movements.create({
-          data: {
-            product_id: line.product_id,
-            batch_id: line.batch_id,
-            type: "IN",
-            quantity: amount,
-            reason: "Retour Cuisine",
-            reference_number: `CUISINE-RET-${operationKey}`,
-            user_id: auth.userId,
-          },
-        });
-        stockMovementId = movement.id;
-        await refreshSnapshot(tx, line.product_id);
-      }
+      await changeLocationBalance(tx, line.batch_id, "CUISINE", amount.negated());
 
       const created = await tx.kitchen_events.create({
         data: {
@@ -119,7 +72,7 @@ export async function POST(req: NextRequest, context: Context) {
           type: eventType,
           quantity: amount,
           actor_id: auth.userId,
-          stock_movement_id: stockMovementId,
+          stock_movement_id: null,
           operation_key: operationKey,
         },
       });
