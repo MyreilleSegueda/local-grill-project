@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState, useRef } from "react";
+import React, { useCallback, useEffect, useState, useRef } from "react";
 import SidebarLayout from "@/src/navbar/SidebarLayout";
 import { useAuth } from "@/lib/hooks/useAuth";
 import { usePagePermissions } from "@/lib/hooks/usePagePermissions";
@@ -481,18 +481,10 @@ export default function RapportsPage(): JSX.Element {
 
   const canView = can("REPORTS_VIEW");
 
-  if (!permLoading && !canView) {
-    return (
-      <SidebarLayout>
-        <AccessDenied permission="REPORTS_VIEW" />
-      </SidebarLayout>
-    );
-  }
-
   /* notification */
   const [notif, setNotif] = useState<Notif | null>(null);
   const [show,  setShow]  = useState(false);
-  const notify = (type: NotifType, message: string) => setNotif({ type, message });
+  const notify = useCallback((type: NotifType, message: string) => setNotif({ type, message }), []);
   useEffect(() => {
     if (!notif) return;
     setShow(true);
@@ -514,22 +506,39 @@ export default function RapportsPage(): JSX.Element {
   const [txl,      setTxl]     = useState(false);
   const [tpdf,     setTpdf]    = useState(false);
 
-  useEffect(() => { if (token) fetchReports(); }, [token, dateRange]);
-
-  const fetchReports = async () => {
+  const fetchReports = useCallback(async () => {
     setLoading(true);
     try {
       const p   = new URLSearchParams({ start: dateRange.start, end: dateRange.end });
       const res = await fetch(`/api/reports?${p.toString()}`, { headers: { Authorization:`Bearer ${token}` } });
-      if (res.ok) {
-        const d: { data: ReportData } = await res.json();
-        setReports(d.data);
-      } else {
-        notify("error", "Erreur lors du chargement");
+      const contentType = res.headers.get("content-type") ?? "";
+      if (!contentType.toLowerCase().includes("application/json")) {
+        throw new Error(`Réponse inattendue du serveur (HTTP ${res.status}) : l'API des rapports a renvoyé du HTML au lieu du JSON.`);
       }
-    } catch { notify("error", "Erreur réseau"); }
+
+      let d: { data?: ReportData; error?: string };
+      try {
+        d = await res.json();
+      } catch {
+        throw new Error("La réponse de l'API des rapports contient un JSON invalide.");
+      }
+
+      if (!res.ok) {
+        notify("error", d.error || "Erreur lors du chargement");
+      } else if (!d.data) {
+        notify("error", "La réponse de l'API des rapports est incomplète.");
+      } else {
+        setReports(d.data);
+      }
+    } catch (error) {
+      notify("error", error instanceof Error ? error.message : "Erreur réseau");
+    }
     finally  { setLoading(false); }
-  };
+  }, [dateRange, notify, token]);
+
+  useEffect(() => {
+    if (token && canView) void fetchReports();
+  }, [token, canView, fetchReports]);
 
   const handleGlobalXlsx = async () => {
     if (!reports) return; setXlLoad(true);
@@ -797,6 +806,14 @@ export default function RapportsPage(): JSX.Element {
   }), { quantity: 0, value: 0, valued: 0 });
   const entryTotals = movementTotals(movementEntries);
   const exitTotals = movementTotals(movementExits);
+
+  if (!permLoading && !canView) {
+    return (
+      <SidebarLayout>
+        <AccessDenied permission="REPORTS_VIEW" />
+      </SidebarLayout>
+    );
+  }
 
   return (
     <SidebarLayout>

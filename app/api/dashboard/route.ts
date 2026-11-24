@@ -207,7 +207,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           minimum_stock: true,
           category:      { select: { name: true } },
           unit:          { select: { abbreviation: true } },
-          stock_batches: { select: { quantity_remaining: true } },
+          stock_batches: { select: { quantity_remaining: true, purchase_price: true } },
         },
       }),
 
@@ -227,6 +227,16 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         },
       }),
     ]);
+
+    // Une entrée magasin crée un lot dans stock_batches (la route /api/stock/add
+    // n'enregistre pas de mouvement stock_movements de type IN).
+    const [entries7, kitchenOut7] = await Promise.all([prisma.stock_batches.findMany({
+      where: { created_at: { gte: d7ago } },
+      select: { quantity_initial: true, created_at: true },
+    }), prisma.stock_location_movements.findMany({
+      where: { from_location: "STORE", to_location: "CUISINE", created_at: { gte: d7ago } },
+      select: { quantity: true, created_at: true },
+    })]);
 
     /* ── KPIs globaux ─────────────────────────────────────────────────── */
 
@@ -267,22 +277,35 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     const days7 = buildLast7Days();
 
     // Grouper par date YYYY-MM-DD — toYMD() maison, aucune locale
-    const byDate = new Map<string, { qty: number; count: number }>();
+    const byDate = new Map<string, { qty: number; count: number; entries: number; kitchenOut: number; kitchenCount: number }>();
     movements7.forEach(m => {
       const key = toYMD(new Date(m.created_at));
-      const cur = byDate.get(key) ?? { qty: 0, count: 0 };
-      byDate.set(key, { qty: cur.qty + Number(m.quantity), count: cur.count + 1 });
+      const cur = byDate.get(key) ?? { qty: 0, count: 0, entries: 0, kitchenOut: 0, kitchenCount: 0 };
+      byDate.set(key, { ...cur, qty: cur.qty + Number(m.quantity), count: cur.count + 1 });
+    });
+    entries7.forEach(m => {
+      const key = toYMD(new Date(m.created_at));
+      const cur = byDate.get(key) ?? { qty: 0, count: 0, entries: 0, kitchenOut: 0, kitchenCount: 0 };
+      byDate.set(key, { ...cur, entries: cur.entries + Number(m.quantity_initial) });
+    });
+    kitchenOut7.forEach(m => {
+      const key = toYMD(new Date(m.created_at));
+      const cur = byDate.get(key) ?? { qty: 0, count: 0, entries: 0, kitchenOut: 0, kitchenCount: 0 };
+      byDate.set(key, { ...cur, kitchenOut: cur.kitchenOut + Number(m.quantity), kitchenCount: cur.kitchenCount + 1 });
     });
 
     // JOURS_FR[getDay()] — identique à doc-11 (pas de date-fns/locale)
     const consumptionChart: DayPoint[] = days7.map(day => {
       const key  = toYMD(day);
-      const data = byDate.get(key) ?? { qty: 0, count: 0 };
+      const data = byDate.get(key) ?? { qty: 0, count: 0, entries: 0, kitchenOut: 0, kitchenCount: 0 };
       return {
         day:            JOURS_FR[day.getDay()],
         date:           key,
         total_consumed: Number(data.qty.toFixed(2)),
         movement_count: data.count,
+        total_entries: Number(data.entries.toFixed(2)),
+        total_kitchen_out: Number(data.kitchenOut.toFixed(2)),
+        kitchen_movement_count: data.kitchenCount,
       };
     });
 
@@ -376,6 +399,18 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       .sort((a, b) => (a.stock / (a.minimum_stock || 1)) - (b.stock / (b.minimum_stock || 1)))
       .slice(0, 10);
 
+    const inventoryOverview = lowStockProducts.map(p => {
+      const stock = p.stock_batches.reduce((sum, batch) => sum + Number(batch.quantity_remaining), 0);
+      return {
+        name: p.name,
+        category_name: p.category?.name ?? "—",
+        unit: p.unit?.abbreviation ?? "",
+        stock: Number(stock.toFixed(2)),
+        minimum_stock: Number(p.minimum_stock),
+        stock_value: Math.round(p.stock_batches.reduce((sum, batch) => sum + Number(batch.quantity_remaining) * Number(batch.purchase_price), 0)),
+      };
+    });
+
     /* ── Valeur du stock par catégorie ────────────────────────────────── */
 
     const stockValueByCategory: Record<string, number> = {};
@@ -406,6 +441,8 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         trends,
         productsLowStockList,
         stockValueByCategory,
+        totalStockValue: Math.round(totalStockValue),
+        inventoryOverview,
       },
     });
 
